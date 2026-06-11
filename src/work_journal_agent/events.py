@@ -12,6 +12,7 @@ from typing import Any, Iterable
 KNOWN_EVENT_TYPES = {
     "user_prompt",
     "tool_result",
+    "file_change",
     "conclusion",
     "note",
     "session_end",

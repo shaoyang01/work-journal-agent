@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from work_journal_agent.setup import remove_claude_hooks
+from work_journal_agent.setup import configure_opencode_plugin, remove_claude_hooks, remove_opencode_plugin
 
 
 class UninstallTests(unittest.TestCase):
@@ -32,7 +32,18 @@ class UninstallTests(unittest.TestCase):
             self.assertEqual(len(data["hooks"]["UserPromptSubmit"]), 1)
             self.assertEqual(data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"], "echo keep")
 
+    def test_remove_custom_opencode_plugin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plugin_path = Path(temp_dir) / "custom" / "work-journal-agent.js"
+            configure_opencode_plugin(
+                plugin_path=plugin_path,
+                config_path=Path(temp_dir) / "config.toml",
+                project_root=Path("/tmp/work-journal-agent"),
+            )
+
+            self.assertTrue(remove_opencode_plugin(plugin_path=plugin_path))
+            self.assertFalse(plugin_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,12 +1,12 @@
 # work-journal-agent
 
-本地优先的工作日志代理，用来把 Codex、Claude Code、手动标记和 Git 证据整理成 Obsidian 工作笔记。
+本地优先的工作日志代理，用来把 Codex、OpenCode、Claude Code、手动标记和 Git 证据整理成 Obsidian 工作笔记。
 
 它的目标不是保存完整聊天记录，而是沉淀任务资产：原始需求、讨论方案、最终结论、产出和后续。
 
 ## 适合谁
 
-- 同时使用 Codex、Claude Code 或其他本地 Agent 工具。
+- 同时使用 Codex、OpenCode、Claude Code 或其他本地 Agent 工具。
 - 希望每天自动生成 Obsidian 工作记录。
 - 希望在多台个人设备上安装使用，同时也能分享给别人。
 
@@ -77,6 +77,7 @@ wj setup
 - 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
 - 如果不启用 DeepSeek，则使用本地规则摘要。
 - 是否自动配置 Claude Code hooks。
+- 是否自动配置 OpenCode 采集插件；默认写入 `~/.config/opencode/plugins/work-journal-agent.js`。
 
 手动配置方式如下。
 
@@ -145,7 +146,7 @@ wj event add \
 wj sync
 ```
 
-它会先导入 Codex 当天 session，再生成今天的 Obsidian Daily。
+它会先导入 Codex 当天 session 和 OpenCode 当天事件，再生成今天的 Obsidian Daily。
 
 手动预览：
 
@@ -157,6 +158,54 @@ wj sync --date 2026-06-11 --dry-run
 
 ```bash
 wj sync --date 2026-06-11
+```
+
+## OpenCode 采集
+
+安装向导默认会询问是否配置 OpenCode 采集插件。启用后会生成：
+
+```text
+~/.config/opencode/plugins/work-journal-agent.js
+```
+
+OpenCode 启动时会自动加载这个插件，插件会把消息、工具执行、文件变更、session diff 等事件写入 work-journal-agent。重复运行 `wj setup` 会刷新这个插件文件。
+
+导入当天 OpenCode 本地事件：
+
+```bash
+wj opencode import --date 2026-06-11
+```
+
+默认读取：
+
+```text
+~/.local/share/opencode/storage
+```
+
+也可以指定路径：
+
+```bash
+wj opencode import --storage-root /path/to/opencode/storage
+```
+
+如果你写 OpenCode 插件，可以把插件事件 JSON 通过 stdin 交给：
+
+```bash
+wj opencode hook
+```
+
+采集器只保存工作日志需要的摘要、文件列表、工具名和会话标识；不会把 OpenCode diff 的 before/after 全量内容写入 inbox。
+
+卸载时会删除由 work-journal-agent 生成的 OpenCode 插件：
+
+```bash
+wj uninstall
+```
+
+如果安装时用了自定义插件路径，卸载时可以指定：
+
+```bash
+wj uninstall --opencode-plugin /path/to/work-journal-agent.js
 ```
 
 ## 后台自动写入

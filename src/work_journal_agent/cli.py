@@ -15,6 +15,7 @@ from .scheduler import install_daily_schedule, install_interval_schedule, schedu
 from .setup import configure_ai_for_config, run_interactive_setup
 from .ai import summarize_tasks
 from .sources.codex import collect_new_codex_events, import_codex_events
+from .sources.opencode import event_from_hook_payload, import_opencode_events, collect_new_opencode_events
 from .uninstall import run_uninstall
 from .writers.obsidian import render_daily, write_daily
 
@@ -71,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
     codex_import_parser.add_argument("--sessions-root", type=Path)
     codex_import_parser.set_defaults(func=cmd_codex_import)
 
+    opencode_parser = subparsers.add_parser("opencode", help="OpenCode source commands")
+    opencode_subparsers = opencode_parser.add_subparsers(dest="opencode_command", required=True)
+    opencode_import_parser = opencode_subparsers.add_parser("import", help="Import OpenCode storage for a day")
+    opencode_import_parser.add_argument("--date", type=parse_date, default=date.today())
+    opencode_import_parser.add_argument("--storage-root", type=Path)
+    opencode_import_parser.set_defaults(func=cmd_opencode_import)
+    opencode_hook_parser = opencode_subparsers.add_parser("hook", help="Read an OpenCode plugin event JSON from stdin")
+    opencode_hook_parser.add_argument("--event-type", default=None, help="Override normalized work event type")
+    opencode_hook_parser.set_defaults(func=cmd_opencode_hook)
+
     ai_parser = subparsers.add_parser("ai", help="Manage AI summarization")
     ai_subparsers = ai_parser.add_subparsers(dest="ai_command", required=True)
     ai_setup_parser = ai_subparsers.add_parser("setup", help="Configure DeepSeek summarization")
@@ -111,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser.add_argument("--remove-config", action="store_true", help="Also remove config.toml")
     uninstall_parser.add_argument("--remove-data", action="store_true", help="Also remove inbox, logs, and output data")
     uninstall_parser.add_argument("--claude-settings", type=Path, help="Path to Claude Code settings.json")
+    uninstall_parser.add_argument("--opencode-plugin", type=Path, help="Path to generated OpenCode plugin")
     uninstall_parser.set_defaults(func=cmd_uninstall)
     return parser
 
@@ -161,20 +173,24 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    result = collect_new_codex_events(config, day=args.date) if args.dry_run else import_codex_events(config, day=args.date)
+    codex_result = collect_new_codex_events(config, day=args.date) if args.dry_run else import_codex_events(config, day=args.date)
+    opencode_result = collect_new_opencode_events(config, day=args.date) if args.dry_run else import_opencode_events(config, day=args.date)
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
     if args.dry_run:
-        events.extend(result.events)
+        events.extend(codex_result.events)
+        events.extend(opencode_result.events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     ai_result = summarize_tasks(config, tasks)
     if args.dry_run:
-        print(f"Imported Codex events: {result.imported_events} from {result.scanned_files} files")
+        print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
+        print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
         if ai_result.enabled:
             print(ai_result.message)
         print(render_daily(args.date, tasks))
         return
     target = write_daily(config, args.date, tasks)
-    print(f"Imported Codex events: {result.imported_events} from {result.scanned_files} files")
+    print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
+    print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
     if ai_result.enabled:
         print(ai_result.message)
     print(str(target))
@@ -184,6 +200,20 @@ def cmd_codex_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     result = import_codex_events(config, day=args.date, sessions_root=args.sessions_root)
     print(f"Imported Codex events: {result.imported_events} from {result.scanned_files} files")
+
+
+def cmd_opencode_import(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    result = import_opencode_events(config, day=args.date, storage_root=args.storage_root)
+    print(f"Imported OpenCode events: {result.imported_events} from {result.scanned_files} files")
+
+
+def cmd_opencode_hook(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    payload = json.load(sys.stdin)
+    event = event_from_hook_payload(payload, config=config, event_type_override=args.event_type)
+    append_event(config.storage.inbox_path, event)
+    print(event.to_json_line())
 
 
 def cmd_ai_setup(args: argparse.Namespace) -> None:
@@ -253,10 +283,12 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
         remove_config=args.remove_config,
         remove_data=args.remove_data,
         claude_settings_path=args.claude_settings,
+        opencode_plugin_path=args.opencode_plugin,
     )
     print("Uninstall complete.")
     print(f"- schedule removed: {result.schedule_removed}")
     print(f"- Claude hooks removed: {result.claude_hooks_removed}")
+    print(f"- OpenCode plugin removed: {result.opencode_plugin_removed}")
     print(f"- config removed: {result.config_removed}")
     print(f"- data removed: {result.data_removed}")
 

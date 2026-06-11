@@ -6,13 +6,14 @@ from pathlib import Path
 
 from .config import default_config_path, default_data_dir
 from .scheduler import uninstall_daily_schedule
-from .setup import remove_claude_hooks
+from .setup import remove_claude_hooks, remove_opencode_plugin
 
 
 @dataclass(frozen=True)
 class UninstallResult:
     schedule_removed: bool
     claude_hooks_removed: bool
+    opencode_plugin_removed: bool
     config_removed: bool
     data_removed: bool
 
@@ -23,11 +24,13 @@ def run_uninstall(
     remove_config: bool = False,
     remove_data: bool = False,
     claude_settings_path: Path | None = None,
+    opencode_plugin_path: Path | None = None,
 ) -> UninstallResult:
     schedule_result = uninstall_daily_schedule(unload=True)
     schedule_removed = not schedule_result.path.exists()
     settings_path = claude_settings_path or Path.home() / ".claude" / "settings.json"
     claude_hooks_removed = remove_claude_hooks(settings_path=settings_path, project_root=project_root)
+    opencode_plugin_removed = remove_opencode_plugin(plugin_path=opencode_plugin_path)
 
     config_removed = False
     config_path = default_config_path()
@@ -48,6 +51,7 @@ def run_uninstall(
     return UninstallResult(
         schedule_removed=schedule_removed,
         claude_hooks_removed=claude_hooks_removed,
+        opencode_plugin_removed=opencode_plugin_removed,
         config_removed=config_removed,
         data_removed=data_removed,
     )
