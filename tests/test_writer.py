@@ -57,6 +57,46 @@ class WriterTests(unittest.TestCase):
 
         self.assertIn("今天没有可归档的工作事件。", output)
 
+    def test_render_daily_includes_ai_followups_when_present(self):
+        task = TaskSummary(
+            key="k1",
+            title="OpenCode 自动采集",
+            day=date(2026, 6, 11),
+            cwd="/repo/project-a",
+            sources={"codex", "opencode"},
+            event_count=4,
+            ai_next_actions=["重启 OpenCode 加载插件", "观察 inbox 是否写入"],
+            ai_blockers=["缺少真实 OpenCode 启动验证"],
+            ai_questions=["是否需要发布安装说明"],
+            ai_validation_gaps=["未做端到端插件事件验证"],
+            ai_owner_hint="user",
+        )
+
+        output = render_daily(date(2026, 6, 11), [task])
+
+        self.assertIn("- 待办：重启 OpenCode 加载插件；观察 inbox 是否写入", output)
+        self.assertIn("- 阻塞：缺少真实 OpenCode 启动验证", output)
+        self.assertIn("- 待确认：是否需要发布安装说明", output)
+        self.assertIn("- 验证缺口：未做端到端插件事件验证", output)
+        self.assertIn("- 建议责任方：user", output)
+
+    def test_render_daily_hides_empty_ai_followups(self):
+        task = TaskSummary(
+            key="k1",
+            title="OpenCode 自动采集",
+            day=date(2026, 6, 11),
+            cwd="/repo/project-a",
+            sources={"opencode"},
+            event_count=2,
+        )
+
+        output = render_daily(date(2026, 6, 11), [task])
+
+        self.assertNotIn("- 待办：", output)
+        self.assertNotIn("- 阻塞：", output)
+        self.assertNotIn("- 待确认：", output)
+        self.assertNotIn("- 验证缺口：", output)
+
 
 if __name__ == "__main__":
     unittest.main()

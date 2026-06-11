@@ -68,6 +68,7 @@ def render_task_brief(task: TaskSummary) -> str:
         f"- 产出：{files}",
         f"- 后续：{next_step}",
     ]
+    lines.extend(render_followup_lines(task))
     return "\n".join(lines)
 
 
@@ -90,7 +91,9 @@ def render_task(task: TaskSummary) -> str:
     lines.extend(bullets(compact_items(task.decisions, limit=3), fallback="暂无明确结论。"))
     lines.extend(["", "### 产出"])
     lines.extend(bullets(compact_items(relative_files(task), limit=8, char_limit=160), fallback="暂无文件产出记录。"))
-    lines.extend(["", "### 后续", "- 待确认。"])
+    lines.extend(["", "### 后续"])
+    followups = render_task_followup_bullets(task)
+    lines.extend(followups if followups else ["- 待确认。"])
     return "\n".join(lines)
 
 
@@ -170,6 +173,41 @@ def display_title(task: TaskSummary) -> str:
 def compact_ai_outputs(task: TaskSummary) -> str:
     shown = compact_items(task.ai_outputs, limit=3, char_limit=90)
     return "；".join(shown) if shown else "暂无文件产出记录。"
+
+
+def render_followup_lines(task: TaskSummary) -> list[str]:
+    lines: list[str] = []
+    if task.ai_next_actions:
+        lines.append(f"- 待办：{compact_followup_items(task.ai_next_actions)}")
+    if task.ai_blockers:
+        lines.append(f"- 阻塞：{compact_followup_items(task.ai_blockers)}")
+    if task.ai_questions:
+        lines.append(f"- 待确认：{compact_followup_items(task.ai_questions)}")
+    if task.ai_validation_gaps:
+        lines.append(f"- 验证缺口：{compact_followup_items(task.ai_validation_gaps)}")
+    if task.ai_owner_hint and task.ai_owner_hint != "none":
+        lines.append(f"- 建议责任方：{task.ai_owner_hint}")
+    return lines
+
+
+def render_task_followup_bullets(task: TaskSummary) -> list[str]:
+    lines: list[str] = []
+    for label, values in (
+        ("待办", task.ai_next_actions),
+        ("阻塞", task.ai_blockers),
+        ("待确认", task.ai_questions),
+        ("验证缺口", task.ai_validation_gaps),
+    ):
+        for value in compact_items(values, limit=5, char_limit=140):
+            lines.append(f"- {label}：{value}")
+    if task.ai_owner_hint and task.ai_owner_hint != "none":
+        lines.append(f"- 建议责任方：{task.ai_owner_hint}")
+    return lines
+
+
+def compact_followup_items(items: list[str]) -> str:
+    shown = compact_items(items, limit=5, char_limit=120)
+    return "；".join(shown)
 
 
 def truncate_item(value: str, limit: int) -> str:

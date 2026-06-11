@@ -12,4 +12,5 @@ build/
 config/config.local.toml
 data/
 out/
+/library
 

@@ -86,10 +86,15 @@ def build_prompt(tasks: list[TaskSummary]) -> str:
         "3. request 保留原始需求核心，不超过 100 字。\n"
         "4. decision 写最终结论或当前进展，不超过 140 字；没有就写“暂无明确结论”。\n"
         "5. outputs 最多 3 条，写关键产出，不要堆完整绝对路径。\n"
-        "6. next 写待确认事项，没有就写“待确认”。\n"
+        "6. next 写一句话后续摘要，没有就写“待确认”。\n"
         "7. 输入已经压缩，但可能仍包含阶段性过程；请优先使用 original_request 和 latest_decisions，不要被中间过程带偏。\n"
         "8. 过滤测试、寒暄、纯确认词和工具噪音。\n"
-        "JSON 字段：key,title,request,decision,outputs,next。\n\n"
+        "9. next_actions 写明确可执行的下一步，最多 5 条；没有输出空数组。\n"
+        "10. blockers 写当前阻塞，最多 5 条；没有输出空数组。\n"
+        "11. questions 写需要用户或外部确认的问题，最多 5 条；没有输出空数组。\n"
+        "12. validation_gaps 写未完成的测试、验证、观察项，最多 5 条；没有输出空数组。\n"
+        "13. owner_hint 只能是 user、agent、external、none 之一，用来表示后续主要责任方。\n"
+        "JSON 字段：key,title,request,decision,outputs,next,next_actions,blockers,questions,validation_gaps,owner_hint。\n\n"
         + json.dumps(compact_tasks, ensure_ascii=False)
     )
 
@@ -172,8 +177,13 @@ def apply_ai_payload(tasks: list[TaskSummary], payload: Any) -> None:
         task.ai_decision = clean_text(item.get("decision"))
         outputs = item.get("outputs")
         if isinstance(outputs, list):
-            task.ai_outputs = [clean_text(value) for value in outputs if clean_text(value)]
+            task.ai_outputs = clean_text_list(outputs, limit=3, char_limit=140)
         task.ai_next = clean_text(item.get("next"))
+        task.ai_next_actions = clean_text_list(item.get("next_actions"), limit=5, char_limit=120)
+        task.ai_blockers = clean_text_list(item.get("blockers"), limit=5, char_limit=120)
+        task.ai_questions = clean_text_list(item.get("questions"), limit=5, char_limit=120)
+        task.ai_validation_gaps = clean_text_list(item.get("validation_gaps"), limit=5, char_limit=120)
+        task.ai_owner_hint = clean_owner_hint(item.get("owner_hint"))
 
 
 def clean_text(value: object) -> str | None:
@@ -181,3 +191,30 @@ def clean_text(value: object) -> str | None:
         return None
     cleaned = " ".join(value.split())
     return cleaned or None
+
+
+def clean_text_list(value: object, *, limit: int, char_limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        cleaned = clean_text(item)
+        if not cleaned or is_low_value_text(cleaned):
+            continue
+        cleaned = truncate_text(cleaned, char_limit)
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def clean_owner_hint(value: object) -> str | None:
+    cleaned = clean_text(value)
+    if not cleaned:
+        return None
+    normalized = cleaned.lower()
+    return normalized if normalized in {"user", "agent", "external", "none"} else None
