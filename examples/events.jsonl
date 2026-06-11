@@ -1,0 +1,4 @@
+{"id":"example-1","source":"claude","event_type":"user_prompt","occurred_at":"2026-06-11T09:10:00+08:00","cwd":"/Users/eric/work/project-a","summary":"排查 SSO 登录失败后的跳转异常","raw_request":"帮我看下 SSO 登录失败后为什么没跳回原页面","decision":null,"files":[],"metadata":{"session_id":"claude-demo"}}
+{"id":"example-2","source":"claude","event_type":"tool_result","occurred_at":"2026-06-11T09:25:00+08:00","cwd":"/Users/eric/work/project-a","summary":"修改 GatewayLoginFilter","raw_request":null,"decision":null,"files":["src/main/java/GatewayLoginFilter.java"],"metadata":{}}
+{"id":"example-3","source":"codex","event_type":"conclusion","occurred_at":"2026-06-11T10:20:00+08:00","cwd":"/Users/eric/work/project-a","summary":"确认 error_code 1210 分支丢失 redirect 参数","raw_request":null,"decision":"复用原 redirectUri 并补充兜底逻辑","files":["src/main/java/GatewayLoginFilter.java"],"metadata":{}}
+

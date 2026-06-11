@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "work-journal-agent"
+version = "0.1.0"
+description = "Local-first work journal collector for Codex, Claude Code, Git, and Obsidian."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "work-journal-agent contributors" }
+]
+keywords = ["obsidian", "claude-code", "codex", "journal", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Utilities"
+]
+
+[project.scripts]
+wj = "work_journal_agent.cli:main"
+work-journal-agent = "work_journal_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

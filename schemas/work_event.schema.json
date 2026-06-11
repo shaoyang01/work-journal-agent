@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaoyang01/work-journal-agent/schemas/work_event.schema.json",
+  "title": "WorkEvent",
+  "type": "object",
+  "required": ["id", "source", "event_type", "occurred_at", "summary", "files", "metadata"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable event id, usually a UUID."
+    },
+    "source": {
+      "type": "string",
+      "examples": ["codex", "claude", "manual", "git"]
+    },
+    "event_type": {
+      "type": "string",
+      "enum": ["user_prompt", "tool_result", "conclusion", "note", "session_end", "assistant_stop"]
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cwd": {
+      "type": ["string", "null"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "raw_request": {
+      "type": ["string", "null"]
+    },
+    "decision": {
+      "type": ["string", "null"]
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
+

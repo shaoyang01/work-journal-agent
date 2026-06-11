@@ -1,0 +1,382 @@
+# work-journal-agent
+
+本地优先的工作日志代理，用来把 Codex、Claude Code、手动标记和 Git 证据整理成 Obsidian 工作笔记。
+
+它的目标不是保存完整聊天记录，而是沉淀任务资产：原始需求、讨论方案、最终结论、产出和后续。
+
+## 适合谁
+
+- 同时使用 Codex、Claude Code 或其他本地 Agent 工具。
+- 希望每天自动生成 Obsidian 工作记录。
+- 希望在多台个人设备上安装使用，同时也能分享给别人。
+
+## 安装
+
+macOS 最简单方式：在 Finder 里双击：
+
+```text
+Install.command
+```
+
+它会自动安装工具，并用中文询问 Obsidian 路径、是否启用 DeepSeek、是否配置 Claude Code hooks、是否安装后台自动写入器。
+
+源码目录内也可以运行启动脚本：
+
+macOS/Linux：
+
+```bash
+./scripts/install.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\start.ps1
+```
+
+如果想接受默认值快速初始化：
+
+```bash
+./scripts/install.sh --yes
+```
+
+开发安装：
+
+```bash
+python -m pip install -e .
+```
+
+如果你使用 `uv`：
+
+```bash
+uv tool install .
+```
+
+安装后会得到两个等价命令：
+
+```bash
+wj --help
+work-journal-agent --help
+```
+
+## 配置
+
+安装后也可以直接运行配置向导：
+
+```bash
+wj setup
+```
+
+配置向导会询问：
+
+- 配置文件路径。
+- inbox JSONL 路径。
+- Obsidian vault 路径。
+- Daily / Tasks 目录名。
+- 是否写独立任务笔记。
+- 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
+- 如果不启用 DeepSeek，则使用本地规则摘要。
+- 是否自动配置 Claude Code hooks。
+
+手动配置方式如下。
+
+复制配置模板：
+
+```bash
+mkdir -p ~/.config/work-journal-agent
+cp config/config.example.toml ~/.config/work-journal-agent/config.toml
+```
+
+Windows 可以放到：
+
+```text
+%APPDATA%\work-journal-agent\config.toml
+```
+
+最小配置：
+
+```toml
+[storage]
+inbox_path = "~/.local/share/work-journal-agent/inbox/events.jsonl"
+output_dir = "./out"
+
+[obsidian]
+vault_path = "/path/to/your/ObsidianVault"
+daily_dir = "Daily"
+task_dir = "Tasks"
+write_task_notes = false
+```
+
+`vault_path` 留空时，会写到 `storage.output_dir`，方便先试跑。
+
+## 手动记录事件
+
+日常临时记一条，优先用短命令：
+
+```bash
+wj note "今天完成了 work-journal-agent 的自动采集和后台写入"
+```
+
+更完整的事件命令仍然保留：
+
+```bash
+wj event add \
+  --source codex \
+  --type conclusion \
+  --summary "确定采用 Claude hooks + JSONL inbox 方案" \
+  --decision "第一版先做本地 CLI，不做后台服务"
+```
+
+记录文件产出：
+
+```bash
+wj event add \
+  --source manual \
+  --type note \
+  --summary "补充 README 安装说明" \
+  --file README.md
+```
+
+## 生成每日笔记
+
+正常情况下不需要手动运行，macOS 会通过 `launchd` 后台定期执行：
+
+```bash
+wj sync
+```
+
+它会先导入 Codex 当天 session，再生成今天的 Obsidian Daily。
+
+手动预览：
+
+```bash
+wj sync --date 2026-06-11 --dry-run
+```
+
+写入 Obsidian 或 fallback 输出目录：
+
+```bash
+wj sync --date 2026-06-11
+```
+
+## 后台自动写入
+
+macOS 下配置向导会询问是否安装后台自动写入器。开启后会创建：
+
+```text
+~/Library/LaunchAgents/com.shaoyang01.work-journal-agent.daily.plist
+```
+
+默认每 15 分钟刷新一次今天的 Daily，电脑重启并登录后会自动恢复。
+如果启用了 DeepSeek，后台任务会自动加载：
+
+```text
+~/.config/work-journal-agent/secrets.env
+```
+
+这个文件权限会设置为 `600`，不要提交到 Git。
+
+## DeepSeek AI 分析
+
+安装向导会询问是否启用 DeepSeek AI 分析：
+
+```text
+是否启用 DeepSeek AI 分析，让它帮助整理每日工作摘要
+```
+
+如果选择启用，可以直接输入 API Key。它会写入本机私有文件：
+
+```text
+~/.config/work-journal-agent/secrets.env
+```
+
+如果机器上已经有 `DEEPSEEK_API_KEY` 环境变量，也可以在安装器询问 API Key 时直接回车使用现有环境变量。
+
+```bash
+export DEEPSEEK_API_KEY="你的 key"
+```
+
+配置文件中对应开关：
+
+```toml
+[ai]
+enabled = true
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 30
+```
+
+DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude 聊天全文。调用失败时会自动回退到本地规则摘要。
+
+已经安装过之后，也可以只配置 DeepSeek：
+
+```bash
+wj ai setup
+```
+
+它会询问 API Key，并自动完成：
+
+- 写入 `~/.config/work-journal-agent/secrets.env`
+- 开启配置文件里的 `[ai].enabled`
+- 重新安装后台自动同步任务
+
+关闭 DeepSeek 辅助总结：
+
+```bash
+wj ai disable
+```
+
+手动安装或重装：
+
+```bash
+wj schedule install --every-minutes 15
+```
+
+查看状态：
+
+```bash
+wj schedule status
+```
+
+卸载后台任务：
+
+```bash
+wj schedule uninstall
+```
+
+## Codex 自动采集
+
+Codex 当前通过本地 session 日志导入，不需要 hook：
+
+```text
+~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+```
+
+后台 `wj sync` 会自动导入当天新增的 Codex 用户需求、最终回复和 patch 文件事件。导入使用稳定 key 去重，重复运行不会重复写入 inbox。
+
+## 本地验证
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests
+```
+
+## Claude Code Hooks
+
+安装 CLI 后，可以在 Claude Code settings 中配置 hook。
+
+macOS/Linux 示例：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Windows PowerShell 示例：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -ExecutionPolicy Bypass -File C:\\path\\to\\work-journal-agent\\hooks\\claude\\hook.ps1 UserPromptSubmit"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+hook 只写轻量事件，不会把 transcript 全量写入 Obsidian。
+
+## 卸载
+
+macOS 最简单方式：在 Finder 里双击：
+
+```text
+Uninstall.command
+```
+
+它会询问是否同时删除配置和历史数据。
+
+macOS/Linux：
+
+```bash
+./scripts/uninstall.sh
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\uninstall.ps1
+```
+
+默认卸载会移除：
+
+- launchd 后台任务。
+- Claude Code settings 里的 work-journal-agent hooks。
+- Python 包安装。
+
+默认保留配置和历史数据。需要一起删除时：
+
+```bash
+./scripts/uninstall.sh --remove-config --remove-data
+```
+
+## 多设备使用建议
+
+- 项目代码用 Git 同步。
+- 每台设备维护自己的 `~/.config/work-journal-agent/config.toml`。
+- Obsidian vault 可以用 iCloud、Syncthing、Git 或 Obsidian Sync 同步。
+- inbox 默认在本机用户目录，不建议提交到仓库。
+
+## 当前边界
+
+第一版使用确定性规则归并任务：
+
+- 同一天。
+- 同 repo/cwd。
+- 文件重叠或关键词重叠。
+
+暂不做云端服务、Notion/飞书输出和 GUI。

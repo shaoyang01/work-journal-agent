@@ -1,0 +1,38 @@
+# Copy this file to one of:
+# - macOS/Linux: ~/.config/work-journal-agent/config.toml
+# - Windows: %APPDATA%\work-journal-agent\config.toml
+# - or pass --config /path/to/config.toml
+
+[storage]
+# JSONL inbox used by all event sources.
+inbox_path = "~/.local/share/work-journal-agent/inbox/events.jsonl"
+
+# Fallback output directory when obsidian.vault_path is empty.
+output_dir = "~/.local/share/work-journal-agent/out"
+
+[obsidian]
+# Keep empty to generate into storage.output_dir.
+vault_path = ""
+daily_dir = "Daily"
+task_dir = "Tasks"
+write_task_notes = false
+
+[privacy]
+# Keep raw user requests short. Set 0 to omit raw_request entirely.
+max_raw_request_chars = 500
+
+# Store Claude transcript paths as references, not transcript contents.
+store_transcript_paths = true
+
+[merge]
+# Events from the same date and same repo/cwd are grouped by default.
+min_keyword_overlap = 1
+
+[ai]
+# Optional. When enabled, wj sync asks DeepSeek to produce concise task summaries.
+enabled = false
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 30
