@@ -36,3 +36,19 @@ base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 timeout_seconds = 30
+cache_enabled = true
+cache_retention_days = 7
+# cache_dir = "~/.local/share/work-journal-agent/ai-cache"
+
+[sources.codex]
+enabled = true
+sessions_root = "~/.codex/sessions"
+
+[sources.claude]
+enabled = false
+settings_path = "~/.claude/settings.json"
+
+[sources.opencode]
+enabled = false
+storage_root = "~/.local/share/opencode/storage"
+plugin_path = "~/.config/opencode/plugins/work-journal-agent.js"

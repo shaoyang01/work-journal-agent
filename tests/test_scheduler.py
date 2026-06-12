@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from work_journal_agent.scheduler import daily_command, install_interval_schedule, parse_time
+from work_journal_agent.scheduler import active_window_command, daily_command, install_interval_schedule, parse_time
 
 
 class SchedulerTests(unittest.TestCase):
@@ -20,6 +20,17 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("work_journal_agent sync", command)
         self.assertIn("secrets.env", command)
 
+    def test_daily_command_can_limit_active_window(self):
+        command = daily_command(Path("/tmp/demo project"), active_from="09:30", active_to="18:00")
+
+        self.assertIn("start=0930", command)
+        self.assertIn("end=1800", command)
+        self.assertIn("date +%H%M", command)
+
+    def test_active_window_requires_both_bounds(self):
+        with self.assertRaises(ValueError):
+            active_window_command("09:00", None)
+
     def test_install_interval_schedule_writes_plist_without_loading(self):
         with tempfile.TemporaryDirectory() as temp_home:
             old_home = os.environ.get("HOME")
@@ -27,13 +38,16 @@ class SchedulerTests(unittest.TestCase):
             try:
                 result = install_interval_schedule(
                     project_root=Path("/tmp/demo project"),
-                    every_minutes=15,
+                    every_minutes=60,
+                    active_from="09:00",
+                    active_to="20:00",
                     load=False,
                 )
                 self.assertTrue(result.path.exists())
                 content = result.path.read_text(encoding="utf-8")
                 self.assertIn("<key>StartInterval</key>", content)
-                self.assertIn("<integer>900</integer>", content)
+                self.assertIn("<integer>3600</integer>", content)
+                self.assertIn("start=0900", content)
             finally:
                 if old_home is None:
                     os.environ.pop("HOME", None)

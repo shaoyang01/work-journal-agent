@@ -8,7 +8,7 @@ import getpass
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import default_config_path, default_data_dir, expand_path
+from .config import default_config_path, default_data_dir, default_opencode_storage_root, expand_path
 from .scheduler import ScheduleResult, install_interval_schedule
 
 
@@ -22,6 +22,8 @@ class SetupResult:
     inbox_path: Path
     output_dir: Path
     obsidian_vault: Path | None
+    codex_sessions_root: Path | None
+    codex_enabled: bool
     claude_settings_path: Path | None
     claude_hooks_enabled: bool
     opencode_plugin_path: Path | None
@@ -34,7 +36,9 @@ def run_interactive_setup(
     project_root: Path,
     yes: bool = False,
     schedule: bool | None = None,
-    every_minutes: int = 15,
+    every_minutes: int = 60,
+    active_from: str | None = None,
+    active_to: str | None = None,
 ) -> SetupResult:
     print("work-journal-agent 配置向导")
     print("接下来会生成本机配置，并可选配置 Claude Code hooks、OpenCode 插件和后台自动写入器。")
@@ -73,12 +77,21 @@ def run_interactive_setup(
             env_name="DEEPSEEK_API_KEY",
             yes=yes,
         )
-    enable_claude_hooks = ask_bool("是否自动配置 Claude Code 采集 hooks", True, yes=yes)
-    enable_opencode_plugin = ask_bool("是否自动配置 OpenCode 采集插件", True, yes=yes)
+    enable_codex = ask_bool("是否启用 Codex 采集", default_codex_enabled(), yes=yes)
+    codex_sessions_root: Path | None = None
+    if enable_codex:
+        codex_sessions_root = ask_path("Codex sessions 根目录", Path.home() / ".codex" / "sessions", yes=yes)
+    enable_claude_hooks = ask_bool("是否启用 Claude Code 采集 hooks", default_claude_enabled(), yes=yes)
+    enable_opencode_plugin = ask_bool("是否启用 OpenCode 采集插件", default_opencode_enabled(), yes=yes)
     if schedule is None:
         enable_schedule = ask_bool("是否安装后台自动写入器，重启后自动恢复", platform.system() == "Darwin", yes=yes)
     else:
         enable_schedule = schedule
+    if enable_schedule and active_from is None and active_to is None:
+        active_from_text = ask_text("后台自动写入开始时间，留空表示全天运行", "", yes=yes).strip()
+        active_to_text = ask_text("后台自动写入结束时间，留空表示全天运行", "", yes=yes).strip()
+        active_from = active_from_text or None
+        active_to = active_to_text or None
 
     claude_settings_path: Path | None = None
     if enable_claude_hooks:
@@ -104,6 +117,13 @@ def run_interactive_setup(
         task_dir=task_dir,
         write_task_notes=write_task_notes,
         enable_ai=enable_ai,
+        enable_codex=enable_codex,
+        codex_sessions_root=codex_sessions_root,
+        enable_claude=enable_claude_hooks,
+        claude_settings_path=claude_settings_path,
+        enable_opencode=enable_opencode_plugin,
+        opencode_storage_root=default_opencode_storage_root(),
+        opencode_plugin_path=opencode_plugin_path,
     )
     if enable_ai and deepseek_api_key:
         create_secrets_file(config_path.parent / "secrets.env", deepseek_api_key)
@@ -130,6 +150,8 @@ def run_interactive_setup(
         schedule_result = install_interval_schedule(
             project_root=project_root,
             every_minutes=every_minutes,
+            active_from=active_from,
+            active_to=active_to,
             load=True,
         )
 
@@ -138,6 +160,8 @@ def run_interactive_setup(
         inbox_path=inbox_path,
         output_dir=output_dir,
         obsidian_vault=obsidian_vault,
+        codex_sessions_root=codex_sessions_root,
+        codex_enabled=enable_codex,
         claude_settings_path=claude_settings_path,
         claude_hooks_enabled=enable_claude_hooks,
         opencode_plugin_path=opencode_plugin_path,
@@ -149,6 +173,8 @@ def run_interactive_setup(
     print(f"- 配置文件：{result.config_path}")
     print(f"- 事件 inbox：{result.inbox_path}")
     print(f"- 输出位置：{result.obsidian_vault or result.output_dir}")
+    if result.codex_enabled:
+        print(f"- Codex sessions：{result.codex_sessions_root}")
     if result.claude_hooks_enabled:
         print(f"- Claude Code settings：{result.claude_settings_path}")
     if result.opencode_plugin_enabled:
@@ -172,8 +198,19 @@ def create_config(
     task_dir: str,
     write_task_notes: bool,
     enable_ai: bool,
+    enable_codex: bool = True,
+    codex_sessions_root: Path | None = None,
+    enable_claude: bool = False,
+    claude_settings_path: Path | None = None,
+    enable_opencode: bool = True,
+    opencode_storage_root: Path | None = None,
+    opencode_plugin_path: Path | None = None,
 ) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    codex_root = codex_sessions_root or Path.home() / ".codex" / "sessions"
+    claude_settings = claude_settings_path or Path.home() / ".claude" / "settings.json"
+    opencode_storage = opencode_storage_root or default_opencode_storage_root()
+    opencode_plugin = opencode_plugin_path or default_opencode_plugin_path()
     content = "\n".join(
         [
             "[storage]",
@@ -200,6 +237,21 @@ def create_config(
             'model = "deepseek-v4-flash"',
             'api_key_env = "DEEPSEEK_API_KEY"',
             "timeout_seconds = 30",
+            "cache_enabled = true",
+            "cache_retention_days = 7",
+            "",
+            "[sources.codex]",
+            f"enabled = {str(enable_codex).lower()}",
+            f'sessions_root = "{toml_string(codex_root)}"',
+            "",
+            "[sources.claude]",
+            f"enabled = {str(enable_claude).lower()}",
+            f'settings_path = "{toml_string(claude_settings)}"',
+            "",
+            "[sources.opencode]",
+            f"enabled = {str(enable_opencode).lower()}",
+            f'storage_root = "{toml_string(opencode_storage)}"',
+            f'plugin_path = "{toml_string(opencode_plugin)}"',
             "",
         ]
     )
@@ -233,6 +285,8 @@ def upsert_ai_config(text: str, *, enabled: bool) -> str:
             'model = "deepseek-v4-flash"',
             'api_key_env = "DEEPSEEK_API_KEY"',
             "timeout_seconds = 30",
+            "cache_enabled = true",
+            "cache_retention_days = 7",
             "",
         ]
     )
@@ -296,6 +350,18 @@ def default_opencode_plugin_path() -> Path:
     else:
         config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return config_base / "opencode" / "plugins" / OPENCODE_PLUGIN_NAME
+
+
+def default_codex_enabled() -> bool:
+    return (Path.home() / ".codex" / "sessions").exists()
+
+
+def default_claude_enabled() -> bool:
+    return (Path.home() / ".claude").exists()
+
+
+def default_opencode_enabled() -> bool:
+    return default_opencode_storage_root().exists() or default_opencode_plugin_path().parent.exists()
 
 
 def configure_opencode_plugin(*, plugin_path: Path, config_path: Path, project_root: Path) -> None:

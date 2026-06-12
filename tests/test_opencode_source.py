@@ -5,7 +5,18 @@ import unittest
 from datetime import date, datetime
 from pathlib import Path
 
-from work_journal_agent.config import AiConfig, AppConfig, MergeConfig, ObsidianConfig, PrivacyConfig, StorageConfig
+from work_journal_agent.config import (
+    AiConfig,
+    AppConfig,
+    ClaudeSourceConfig,
+    CodexSourceConfig,
+    MergeConfig,
+    ObsidianConfig,
+    OpenCodeSourceConfig,
+    PrivacyConfig,
+    SourcesConfig,
+    StorageConfig,
+)
 from work_journal_agent.sources.opencode import event_from_hook_payload, events_from_storage, import_opencode_events
 
 
@@ -167,6 +178,14 @@ def test_config(base: Path) -> AppConfig:
             model="deepseek-v4-flash",
             api_key_env="DEEPSEEK_API_KEY",
             timeout_seconds=30,
+            cache_enabled=True,
+            cache_retention_days=7,
+            cache_dir=base / "ai-cache",
+        ),
+        sources=SourcesConfig(
+            codex=CodexSourceConfig(enabled=False, sessions_root=base / "sessions"),
+            claude=ClaudeSourceConfig(enabled=False, settings_path=base / "claude-settings.json"),
+            opencode=OpenCodeSourceConfig(enabled=True, storage_root=base / "storage", plugin_path=base / "opencode-plugin.js"),
         ),
     )
 

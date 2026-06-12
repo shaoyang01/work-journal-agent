@@ -21,6 +21,7 @@ class TaskSummary:
     decisions: list[str] = field(default_factory=list)
     files: set[str] = field(default_factory=set)
     session_ids: set[str] = field(default_factory=set)
+    event_ids: set[str] = field(default_factory=set)
     event_count: int = 0
     ai_title: str | None = None
     ai_request: str | None = None
@@ -35,6 +36,7 @@ class TaskSummary:
 
     def add(self, event: WorkEvent) -> None:
         self.event_count += 1
+        self.event_ids.add(event.id)
         self.sources.add(event.source)
         session_id = event.metadata.get("session_id")
         if session_id:

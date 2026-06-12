@@ -41,6 +41,35 @@ class AiConfig:
     model: str
     api_key_env: str
     timeout_seconds: int
+    cache_enabled: bool
+    cache_retention_days: int
+    cache_dir: Path
+
+
+@dataclass(frozen=True)
+class CodexSourceConfig:
+    enabled: bool
+    sessions_root: Path
+
+
+@dataclass(frozen=True)
+class ClaudeSourceConfig:
+    enabled: bool
+    settings_path: Path
+
+
+@dataclass(frozen=True)
+class OpenCodeSourceConfig:
+    enabled: bool
+    storage_root: Path
+    plugin_path: Path
+
+
+@dataclass(frozen=True)
+class SourcesConfig:
+    codex: CodexSourceConfig
+    claude: ClaudeSourceConfig
+    opencode: OpenCodeSourceConfig
 
 
 @dataclass(frozen=True)
@@ -50,6 +79,7 @@ class AppConfig:
     privacy: PrivacyConfig
     merge: MergeConfig
     ai: AiConfig
+    sources: SourcesConfig
 
 
 def default_config_path() -> Path:
@@ -106,6 +136,10 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     privacy = data.get("privacy", {})
     merge = data.get("merge", {})
     ai = data.get("ai", {})
+    sources = data.get("sources", {})
+    codex_source = sources.get("codex", {}) if isinstance(sources.get("codex", {}), dict) else {}
+    claude_source = sources.get("claude", {}) if isinstance(sources.get("claude", {}), dict) else {}
+    opencode_source = sources.get("opencode", {}) if isinstance(sources.get("opencode", {}), dict) else {}
 
     data_dir = default_data_dir()
     inbox_path = expand_path(storage.get("inbox_path", data_dir / "inbox" / "events.jsonl"), base_dir=config_base)
@@ -139,5 +173,36 @@ def load_config(config_path: Path | None = None) -> AppConfig:
             model=str(ai.get("model", "deepseek-v4-flash")),
             api_key_env=str(ai.get("api_key_env", "DEEPSEEK_API_KEY")),
             timeout_seconds=int(ai.get("timeout_seconds", 30)),
+            cache_enabled=bool(ai.get("cache_enabled", True)),
+            cache_retention_days=max(1, int(ai.get("cache_retention_days", 7))),
+            cache_dir=expand_path(ai.get("cache_dir", data_dir / "ai-cache"), base_dir=config_base),
+        ),
+        sources=SourcesConfig(
+            codex=CodexSourceConfig(
+                enabled=bool(codex_source.get("enabled", True)),
+                sessions_root=expand_path(codex_source.get("sessions_root", Path.home() / ".codex" / "sessions"), base_dir=config_base),
+            ),
+            claude=ClaudeSourceConfig(
+                enabled=bool(claude_source.get("enabled", False)),
+                settings_path=expand_path(claude_source.get("settings_path", Path.home() / ".claude" / "settings.json"), base_dir=config_base),
+            ),
+            opencode=OpenCodeSourceConfig(
+                enabled=bool(opencode_source.get("enabled", True)),
+                storage_root=expand_path(opencode_source.get("storage_root", default_opencode_storage_root()), base_dir=config_base),
+                plugin_path=expand_path(opencode_source.get("plugin_path", default_opencode_plugin_path()), base_dir=config_base),
+            ),
         ),
     )
+
+
+def default_opencode_storage_root() -> Path:
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return data_home / "opencode" / "storage"
+
+
+def default_opencode_plugin_path() -> Path:
+    if platform.system() == "Windows":
+        config_base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_base / "opencode" / "plugins" / "work-journal-agent.js"

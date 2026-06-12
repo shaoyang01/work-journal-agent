@@ -1,8 +1,8 @@
+import tempfile
 import unittest
-
-from work_journal_agent.config import strip_wrapping_quotes
 from pathlib import Path
 
+from work_journal_agent.config import load_config, strip_wrapping_quotes
 from work_journal_agent.setup import (
     configure_opencode_plugin,
     default_opencode_plugin_path,
@@ -69,8 +69,6 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(remove_opencode_plugin(plugin_path=plugin_path))
 
     def test_remove_opencode_plugin_keeps_user_plugin(self):
-        import tempfile
-
         with tempfile.TemporaryDirectory() as temp_dir:
             plugin_path = Path(temp_dir) / "opencode" / "plugins" / "custom.js"
             plugin_path.parent.mkdir(parents=True)
@@ -78,6 +76,46 @@ class ConfigTests(unittest.TestCase):
 
             self.assertFalse(remove_opencode_plugin(plugin_path=plugin_path))
             self.assertTrue(plugin_path.exists())
+
+    def test_load_config_reads_sources_and_ai_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "[ai]",
+                        "enabled = true",
+                        "cache_enabled = true",
+                        "cache_retention_days = 3",
+                        'cache_dir = "cache"',
+                        "",
+                        "[sources.codex]",
+                        "enabled = false",
+                        'sessions_root = "codex-sessions"',
+                        "",
+                        "[sources.claude]",
+                        "enabled = true",
+                        'settings_path = "claude/settings.json"',
+                        "",
+                        "[sources.opencode]",
+                        "enabled = false",
+                        'storage_root = "opencode-storage"',
+                        'plugin_path = "opencode/plugin.js"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertTrue(config.ai.cache_enabled)
+            self.assertEqual(config.ai.cache_retention_days, 3)
+            self.assertEqual(config.ai.cache_dir, Path(temp_dir) / "cache")
+            self.assertFalse(config.sources.codex.enabled)
+            self.assertEqual(config.sources.codex.sessions_root, Path(temp_dir) / "codex-sessions")
+            self.assertTrue(config.sources.claude.enabled)
+            self.assertFalse(config.sources.opencode.enabled)
 
 
 if __name__ == "__main__":

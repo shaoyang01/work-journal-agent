@@ -103,14 +103,18 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--yes", action="store_true", help="Accept defaults without prompting")
     setup_parser.add_argument("--schedule", action="store_true", default=None, help="Install daily auto generation")
     setup_parser.add_argument("--no-schedule", action="store_false", dest="schedule", help="Skip daily auto generation")
-    setup_parser.add_argument("--every-minutes", type=int, default=15, help="Background writer interval")
+    setup_parser.add_argument("--every-minutes", type=int, default=60, help="Background writer interval")
+    setup_parser.add_argument("--active-from", help="Only run background sync at or after HH:MM")
+    setup_parser.add_argument("--active-to", help="Only run background sync at or before HH:MM")
     setup_parser.set_defaults(func=cmd_setup)
 
     schedule_parser = subparsers.add_parser("schedule", help="Manage daily auto generation")
     schedule_subparsers = schedule_parser.add_subparsers(dest="schedule_command", required=True)
     schedule_install_parser = schedule_subparsers.add_parser("install", help="Install daily auto generation")
     schedule_install_parser.add_argument("--time", help="Daily time, HH:MM")
-    schedule_install_parser.add_argument("--every-minutes", type=int, default=15, help="Refresh interval when --time is omitted")
+    schedule_install_parser.add_argument("--every-minutes", type=int, default=60, help="Refresh interval when --time is omitted")
+    schedule_install_parser.add_argument("--active-from", help="Only run interval sync at or after HH:MM")
+    schedule_install_parser.add_argument("--active-to", help="Only run interval sync at or before HH:MM")
     schedule_install_parser.add_argument("--no-load", action="store_true", help="Write schedule file without loading it")
     schedule_install_parser.set_defaults(func=cmd_schedule_install)
     schedule_uninstall_parser = schedule_subparsers.add_parser("uninstall", help="Remove daily auto generation")
@@ -173,8 +177,20 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    codex_result = collect_new_codex_events(config, day=args.date) if args.dry_run else import_codex_events(config, day=args.date)
-    opencode_result = collect_new_opencode_events(config, day=args.date) if args.dry_run else import_opencode_events(config, day=args.date)
+    codex_result = empty_import_result("codex")
+    if config.sources.codex.enabled:
+        codex_root = config.sources.codex.sessions_root
+        if args.dry_run:
+            codex_result = collect_new_codex_events(config, day=args.date, sessions_root=codex_root)
+        else:
+            codex_result = import_codex_events(config, day=args.date, sessions_root=codex_root)
+    opencode_result = empty_import_result("opencode")
+    if config.sources.opencode.enabled:
+        opencode_root = config.sources.opencode.storage_root
+        if args.dry_run:
+            opencode_result = collect_new_opencode_events(config, day=args.date, storage_root=opencode_root)
+        else:
+            opencode_result = import_opencode_events(config, day=args.date, storage_root=opencode_root)
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
     if args.dry_run:
         events.extend(codex_result.events)
@@ -198,13 +214,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 def cmd_codex_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    result = import_codex_events(config, day=args.date, sessions_root=args.sessions_root)
+    result = import_codex_events(config, day=args.date, sessions_root=args.sessions_root or config.sources.codex.sessions_root)
     print(f"Imported Codex events: {result.imported_events} from {result.scanned_files} files")
 
 
 def cmd_opencode_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    result = import_opencode_events(config, day=args.date, storage_root=args.storage_root)
+    result = import_opencode_events(config, day=args.date, storage_root=args.storage_root or config.sources.opencode.storage_root)
     print(f"Imported OpenCode events: {result.imported_events} from {result.scanned_files} files")
 
 
@@ -229,7 +245,7 @@ def cmd_ai_setup(args: argparse.Namespace) -> None:
     print(f"Secret saved to {config_path.parent / 'secrets.env'}")
     if not args.no_schedule:
         project_root = Path(__file__).resolve().parents[2]
-        result = install_interval_schedule(project_root=project_root, every_minutes=15, load=True)
+        result = install_interval_schedule(project_root=project_root, every_minutes=60, load=True)
         print(result.message)
 
 
@@ -255,7 +271,14 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     project_root = Path(__file__).resolve().parents[2]
-    run_interactive_setup(project_root=project_root, yes=args.yes, schedule=args.schedule, every_minutes=args.every_minutes)
+    run_interactive_setup(
+        project_root=project_root,
+        yes=args.yes,
+        schedule=args.schedule,
+        every_minutes=args.every_minutes,
+        active_from=args.active_from,
+        active_to=args.active_to,
+    )
 
 
 def cmd_schedule_install(args: argparse.Namespace) -> None:
@@ -263,7 +286,13 @@ def cmd_schedule_install(args: argparse.Namespace) -> None:
     if args.time:
         result = install_daily_schedule(project_root=project_root, time_text=args.time, load=not args.no_load)
     else:
-        result = install_interval_schedule(project_root=project_root, every_minutes=args.every_minutes, load=not args.no_load)
+        result = install_interval_schedule(
+            project_root=project_root,
+            every_minutes=args.every_minutes,
+            active_from=args.active_from,
+            active_to=args.active_to,
+            load=not args.no_load,
+        )
     print(result.message)
 
 
@@ -366,6 +395,16 @@ def parse_metadata(values: list[str]) -> dict[str, str]:
 
 def parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+class EmptyImportResult:
+    scanned_files = 0
+    imported_events = 0
+    events: tuple[WorkEvent, ...] = ()
+
+
+def empty_import_result(source: str) -> EmptyImportResult:
+    return EmptyImportResult()
 
 
 if __name__ == "__main__":

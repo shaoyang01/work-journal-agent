@@ -76,8 +76,9 @@ wj setup
 - 是否写独立任务笔记。
 - 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
 - 如果不启用 DeepSeek，则使用本地规则摘要。
-- 是否自动配置 Claude Code hooks。
-- 是否自动配置 OpenCode 采集插件；默认写入 `~/.config/opencode/plugins/work-journal-agent.js`。
+- 是否启用 Codex 采集；启用后会询问 sessions 根目录。
+- 是否启用 Claude Code 采集 hooks；启用后才会询问 settings.json 路径。
+- 是否启用 OpenCode 采集插件；启用后才会询问插件保存路径。
 
 手动配置方式如下。
 
@@ -216,7 +217,7 @@ macOS 下配置向导会询问是否安装后台自动写入器。开启后会�
 ~/Library/LaunchAgents/com.shaoyang01.work-journal-agent.daily.plist
 ```
 
-默认每 15 分钟刷新一次今天的 Daily，电脑重启并登录后会自动恢复。
+默认每 60 分钟刷新一次今天的 Daily，电脑重启并登录后会自动恢复。
 如果启用了 DeepSeek，后台任务会自动加载：
 
 ```text
@@ -255,9 +256,11 @@ base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 timeout_seconds = 30
+cache_enabled = true
+cache_retention_days = 7
 ```
 
-DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude 聊天全文。调用失败时会自动回退到本地规则摘要。
+DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。调用失败时会自动回退到本地规则摘要或已缓存结果。
 
 已经安装过之后，也可以只配置 DeepSeek：
 
@@ -280,7 +283,7 @@ wj ai disable
 手动安装或重装：
 
 ```bash
-wj schedule install --every-minutes 15
+wj schedule install --every-minutes 60
 ```
 
 查看状态：

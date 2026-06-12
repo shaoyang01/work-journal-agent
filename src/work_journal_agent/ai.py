@@ -10,6 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .ai_cache import (
+    ai_result_from_task,
+    apply_cached_result,
+    delta_context,
+    find_cache_match,
+    load_cache,
+    prune_cache,
+    save_cache,
+    task_cache_entry,
+)
 from .merge import TaskSummary, repo_identity
 from .writers.obsidian import compact_items, is_noise_item, relative_files, unique
 
@@ -33,14 +43,69 @@ def summarize_tasks(config: AppConfig, tasks: list[TaskSummary]) -> AiSummaryRes
         return AiSummaryResult(enabled=True, used=False, message="No tasks to summarize")
 
     try:
-        payload = call_deepseek(config, api_key, tasks)
-        apply_ai_payload(tasks, payload)
+        if config.ai.cache_enabled:
+            summarized = summarize_tasks_with_cache(config, api_key, tasks)
+        else:
+            payload = call_deepseek(config, api_key, tasks)
+            apply_ai_payload(tasks, payload)
+            summarized = len(tasks)
     except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
         return AiSummaryResult(enabled=True, used=False, message=f"AI summary failed: {exc}")
+    if config.ai.cache_enabled and summarized == 0:
+        return AiSummaryResult(enabled=True, used=True, message="AI summary reused from cache")
+    if config.ai.cache_enabled:
+        return AiSummaryResult(enabled=True, used=True, message=f"AI summary applied ({summarized} task(s) refreshed)")
     return AiSummaryResult(enabled=True, used=True, message="AI summary applied")
 
 
+def summarize_tasks_with_cache(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> int:
+    day = tasks[0].day
+    cache = load_cache(config.ai.cache_dir, day)
+    cache_entries = [entry for entry in cache.get("tasks") or [] if isinstance(entry, dict)]
+    contexts_by_key: dict[str, dict[str, Any]] = {}
+    request_items: list[dict[str, Any]] = []
+
+    for task in tasks:
+        context = task_context(task)
+        contexts_by_key[task.key] = context
+        match = find_cache_match(task, cache_entries)
+        if match and len(match.entries) == 1 and not (set(task.event_ids) - match.event_ids):
+            results = match.ai_results
+            if results:
+                apply_cached_result(task, results[0])
+                continue
+        if match:
+            request_items.append(
+                {
+                    "mode": "merge_delta",
+                    "key": task.key,
+                    "project": context.get("project"),
+                    "sources": context.get("sources"),
+                    "previous_ai_results": match.ai_results,
+                    "delta_events": delta_context(context, match.contexts),
+                }
+            )
+        else:
+            request_items.append({"mode": "new_task", "key": task.key, "task": context})
+
+    if request_items:
+        payload = call_deepseek_for_prompt(config, api_key, build_incremental_prompt(request_items))
+        apply_ai_payload(tasks, payload)
+
+    save_cache(
+        config.ai.cache_dir,
+        day,
+        [task_cache_entry(task, context=contexts_by_key[task.key], ai_result=ai_result_from_task(task)) for task in tasks],
+    )
+    prune_cache(config.ai.cache_dir, keep_days=config.ai.cache_retention_days, today=day)
+    return len(request_items)
+
+
 def call_deepseek(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> Any:
+    return call_deepseek_for_prompt(config, api_key, build_prompt(tasks))
+
+
+def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str) -> Any:
     body = {
         "model": config.ai.model,
         "messages": [
@@ -53,7 +118,7 @@ def call_deepseek(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> 
             },
             {
                 "role": "user",
-                "content": build_prompt(tasks),
+                "content": prompt,
             },
         ],
         "stream": False,
@@ -96,6 +161,23 @@ def build_prompt(tasks: list[TaskSummary]) -> str:
         "13. owner_hint 只能是 user、agent、external、none 之一，用来表示后续主要责任方。\n"
         "JSON 字段：key,title,request,decision,outputs,next,next_actions,blockers,questions,validation_gaps,owner_hint。\n\n"
         + json.dumps(compact_tasks, ensure_ascii=False)
+    )
+
+
+def build_incremental_prompt(items: list[dict[str, Any]]) -> str:
+    return (
+        "请基于以下增量工作事件更新适合 Obsidian Daily 的任务摘要。\n"
+        "要求：\n"
+        "1. 每个输入对象都必须输出一个对象，key 必须原样保留。\n"
+        "2. mode=new_task 时，根据 task 生成完整摘要。\n"
+        "3. mode=merge_delta 时，不能假设已有完整上下文；只能基于 previous_ai_results 和 delta_events 输出合并后的最新任务状态。\n"
+        "4. merge_delta 不要丢失仍然有效的旧待办；如果新增事件说明旧阻塞、待确认或验证缺口已解决，则移除它。\n"
+        "5. request 保留最初核心需求，必要时补充新增需求；decision 以最新结论为准但保留关键历史结论。\n"
+        "6. outputs 最多 3 条，next_actions/blockers/questions/validation_gaps 各最多 5 条。\n"
+        "7. owner_hint 只能是 user、agent、external、none 之一。\n"
+        "8. 只根据输入摘要整理，不编造。\n"
+        "JSON 字段：key,title,request,decision,outputs,next,next_actions,blockers,questions,validation_gaps,owner_hint。\n\n"
+        + json.dumps(items, ensure_ascii=False)
     )
 
 

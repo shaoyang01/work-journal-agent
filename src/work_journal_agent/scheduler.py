@@ -49,17 +49,29 @@ def install_daily_schedule(*, project_root: Path, time_text: str, load: bool = T
     return ScheduleResult(path=plist_path, loaded=loaded, message=message)
 
 
-def install_interval_schedule(*, project_root: Path, every_minutes: int = 15, load: bool = True) -> ScheduleResult:
+def install_interval_schedule(
+    *,
+    project_root: Path,
+    every_minutes: int = 60,
+    load: bool = True,
+    active_from: str | None = None,
+    active_to: str | None = None,
+) -> ScheduleResult:
     if platform.system() != "Darwin":
         raise ValueError("automatic scheduling is currently implemented for macOS launchd only")
     if every_minutes < 1:
         raise ValueError("every_minutes must be greater than 0")
+    if bool(active_from) != bool(active_to):
+        raise ValueError("active_from and active_to must be provided together")
+    if active_from and active_to:
+        parse_time(active_from)
+        parse_time(active_to)
     launch_agents = Path.home() / "Library" / "LaunchAgents"
     launch_agents.mkdir(parents=True, exist_ok=True)
     logs_dir = default_data_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     plist_path = launch_agents / f"{LAUNCHD_LABEL}.plist"
-    command = daily_command(project_root)
+    command = daily_command(project_root, active_from=active_from, active_to=active_to)
     plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": ["/bin/zsh", "-lc", command],
@@ -96,13 +108,33 @@ def schedule_status() -> str:
     return f"installed: {plist_path}"
 
 
-def daily_command(project_root: Path) -> str:
+def daily_command(project_root: Path, *, active_from: str | None = None, active_to: str | None = None) -> str:
     quoted_root = shell_quote(project_root)
     secrets = Path.home() / ".config" / "work-journal-agent" / "secrets.env"
     quoted_secrets = shell_quote(secrets)
+    window = active_window_command(active_from, active_to)
     return (
-        f"if [ -f {quoted_secrets} ]; then source {quoted_secrets}; fi; "
-        f"cd {quoted_root} && PYTHONPATH=src python3 -m work_journal_agent sync"
+        window
+        + f"if [ -f {quoted_secrets} ]; then source {quoted_secrets}; fi; "
+        + f"cd {quoted_root} && PYTHONPATH=src python3 -m work_journal_agent sync"
+    )
+
+
+def active_window_command(active_from: str | None, active_to: str | None) -> str:
+    if not active_from and not active_to:
+        return ""
+    if not active_from or not active_to:
+        raise ValueError("active_from and active_to must be provided together")
+    start = time_as_hhmm(active_from)
+    end = time_as_hhmm(active_to)
+    return (
+        "now=$(date +%H%M); "
+        f"start={start}; end={end}; "
+        'if [ "$start" -le "$end" ]; then '
+        'if [ "$now" -lt "$start" ] || [ "$now" -gt "$end" ]; then exit 0; fi; '
+        "else "
+        'if [ "$now" -lt "$start" ] && [ "$now" -gt "$end" ]; then exit 0; fi; '
+        "fi; "
     )
 
 
@@ -115,6 +147,11 @@ def parse_time(value: str) -> tuple[int, int]:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         raise ValueError("time must be between 00:00 and 23:59")
     return hour, minute
+
+
+def time_as_hhmm(value: str) -> str:
+    hour, minute = parse_time(value)
+    return f"{hour:02d}{minute:02d}"
 
 
 def load_launchd_plist(plist_path: Path) -> bool:
