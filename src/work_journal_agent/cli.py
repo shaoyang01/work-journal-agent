@@ -11,6 +11,8 @@ from typing import Any
 from .config import load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
 from .merge import group_events
+from .requirements import apply_requirement_assignments
+from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
 from .ai import generate_knowledge_topics, review_task_clusters, summarize_tasks
@@ -69,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument("--date", type=parse_date, default=date.today())
     sync_parser.add_argument("--dry-run", action="store_true")
     sync_parser.set_defaults(func=cmd_sync)
+
+    requirements_parser = subparsers.add_parser("requirements", help="Review requirement threads")
+    requirements_subparsers = requirements_parser.add_subparsers(dest="requirements_command", required=True)
+    requirements_review_parser = requirements_subparsers.add_parser("review", help="Open local requirement confirmation page")
+    requirements_review_parser.add_argument("--date", type=parse_date, default=date.today())
+    requirements_review_parser.add_argument("--port", type=int, default=8765)
+    requirements_review_parser.add_argument("--host", default="127.0.0.1")
+    requirements_review_parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
+    requirements_review_parser.set_defaults(func=cmd_requirements_review)
 
     codex_parser = subparsers.add_parser("codex", help="Codex source commands")
     codex_subparsers = codex_parser.add_subparsers(dest="codex_command", required=True)
@@ -173,6 +184,7 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
+    apply_requirement_assignments(config, args.date, tasks)
     if args.dry_run:
         if should_print_cluster_message(cluster_result.message):
             print(cluster_result.message)
@@ -236,6 +248,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
+    apply_requirement_assignments(config, args.date, tasks)
     if args.dry_run:
         print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
         print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
@@ -259,6 +272,11 @@ def cmd_codex_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     result = import_codex_events(config, day=args.date, sessions_root=args.sessions_root or config.sources.codex.sessions_root)
     print(f"Imported Codex events: {result.imported_events} from {result.scanned_files} files")
+
+
+def cmd_requirements_review(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    run_review_server(config, day=args.date, host=args.host, port=args.port, open_browser=not args.no_open)
 
 
 def cmd_opencode_import(args: argparse.Namespace) -> None:

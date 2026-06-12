@@ -171,6 +171,32 @@ wj generate-knowledge --date 2026-06-11
 
 当前建议保持关闭，等知识沉淀策略明确后再启用。
 
+## 需求确认页
+
+如果 Daily 里出现文件路径式标题，或同一个需求跨 Claude/Codex 多轮方案、实现、review，可以先打开本地确认页：
+
+```bash
+wj requirements review --date 2026-06-12
+```
+
+页面会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机：
+
+```text
+~/.local/share/work-journal-agent/requirements/threads.json
+~/.local/share/work-journal-agent/requirements/daily/YYYY-MM-DD.json
+~/.local/share/work-journal-agent/state/status.json
+```
+
+后续 `wj generate-daily` 会优先使用已确认的需求标题。
+
+macOS 可以安装一个很薄的顶部菜单栏入口：
+
+```bash
+scripts/install-menubar.sh
+```
+
+菜单栏只提供按钮入口：同步最新事件、打开今日确认页、生成今日日报、打开本地数据目录。
+
 ## OpenCode 采集
 
 安装向导默认会询问是否配置 OpenCode 采集插件。启用后会生成：
