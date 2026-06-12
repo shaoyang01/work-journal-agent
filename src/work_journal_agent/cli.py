@@ -10,8 +10,9 @@ from typing import Any
 
 from .config import load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
+from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
-from .requirements import apply_requirement_assignments
+from .requirements import apply_requirement_assignments, build_review_payload, save_review_decisions
 from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
@@ -80,6 +81,21 @@ def build_parser() -> argparse.ArgumentParser:
     requirements_review_parser.add_argument("--host", default="127.0.0.1")
     requirements_review_parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically")
     requirements_review_parser.set_defaults(func=cmd_requirements_review)
+    requirements_payload_parser = requirements_subparsers.add_parser("payload", help="Print requirement review payload as JSON")
+    requirements_payload_parser.add_argument("--date", type=parse_date, default=date.today())
+    requirements_payload_parser.set_defaults(func=cmd_requirements_payload)
+    requirements_save_parser = requirements_subparsers.add_parser("save", help="Read requirement review decisions JSON from stdin")
+    requirements_save_parser.add_argument("--date", type=parse_date, default=date.today())
+    requirements_save_parser.set_defaults(func=cmd_requirements_save)
+
+    app_parser = subparsers.add_parser("app", help="Native app JSON integration")
+    app_subparsers = app_parser.add_subparsers(dest="app_command", required=True)
+    app_status_parser = app_subparsers.add_parser("status", help="Print native app status JSON")
+    app_status_parser.set_defaults(func=cmd_app_status)
+    app_config_parser = app_subparsers.add_parser("config", help="Print native app config JSON")
+    app_config_parser.set_defaults(func=cmd_app_config)
+    app_config_save_parser = app_subparsers.add_parser("config-save", help="Read native app config JSON from stdin")
+    app_config_save_parser.set_defaults(func=cmd_app_config_save)
 
     codex_parser = subparsers.add_parser("codex", help="Codex source commands")
     codex_subparsers = codex_parser.add_subparsers(dest="codex_command", required=True)
@@ -279,6 +295,34 @@ def cmd_requirements_review(args: argparse.Namespace) -> None:
     run_review_server(config, day=args.date, host=args.host, port=args.port, open_browser=not args.no_open)
 
 
+def cmd_requirements_payload(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    print_json(build_review_payload(config, args.date))
+
+
+def cmd_requirements_save(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    payload = json_from_stdin(sys.stdin.read())
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list):
+        raise ValueError("decisions must be an array")
+    print_json(save_review_decisions(args.date, decisions, config=config))
+
+
+def cmd_app_status(args: argparse.Namespace) -> None:
+    print_json(build_app_status(args.config))
+
+
+def cmd_app_config(args: argparse.Namespace) -> None:
+    print_json(build_config_payload(args.config))
+
+
+def cmd_app_config_save(args: argparse.Namespace) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    payload = json_from_stdin(sys.stdin.read())
+    print_json(save_config_payload(payload, project_root=project_root, config_path=args.config))
+
+
 def cmd_opencode_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     result = import_opencode_events(config, day=args.date, storage_root=args.storage_root or config.sources.opencode.storage_root)
@@ -456,6 +500,10 @@ def parse_metadata(values: list[str]) -> dict[str, str]:
 
 def parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def print_json(payload: Any) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 class EmptyImportResult:

@@ -171,15 +171,47 @@ wj generate-knowledge --date 2026-06-11
 
 当前建议保持关闭，等知识沉淀策略明确后再启用。
 
-## 需求确认页
+## 需求确认与菜单栏 App
 
-如果 Daily 里出现文件路径式标题，或同一个需求跨 Claude/Codex 多轮方案、实现、review，可以先打开本地确认页：
+如果 Daily 里出现文件路径式标题，或同一个需求跨 Claude/Codex 多轮方案、实现、review，可以用 macOS 顶部菜单栏 App 直接弹出原生确认窗口：
 
 ```bash
-wj requirements review --date 2026-06-12
+scripts/install-menubar.sh
 ```
 
-页面会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机：
+安装后顶部状态栏会出现 `WJ`。点击菜单可以：
+
+- 打开今日需求确认窗口
+- 同步最新事件
+- 生成今日日报
+- 打开设置窗口
+- 打开本地数据目录和日志
+
+如果只想生成一个可双击的本机测试版，不安装到 `~/Applications`，可以构建到 `dist/`：
+
+```bash
+scripts/build-local-app.sh
+```
+
+然后在 Finder 里双击：
+
+```text
+dist/Work Journal Agent.app
+```
+
+这个本机测试版会绑定当前仓库路径，并调用当前仓库下的 Python CLI。移动仓库后需要重新构建。
+
+菜单栏 App 不启动本地 HTTP 服务，也不打开浏览器。它通过 CLI JSON 通道调用本地核心逻辑：
+
+```bash
+wj requirements payload --date 2026-06-12
+wj requirements save --date 2026-06-12
+wj app config
+wj app config-save
+wj app status
+```
+
+确认窗口会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机：
 
 ```text
 ~/.local/share/work-journal-agent/requirements/threads.json
@@ -189,13 +221,11 @@ wj requirements review --date 2026-06-12
 
 后续 `wj generate-daily` 会优先使用已确认的需求标题。
 
-macOS 可以安装一个很薄的顶部菜单栏入口：
+本地 HTML 确认页仍保留为调试入口，需要时可手动启动：
 
 ```bash
-scripts/install-menubar.sh
+wj requirements review --date 2026-06-12
 ```
-
-菜单栏只提供按钮入口：同步最新事件、打开今日确认页、生成今日日报、打开本地数据目录。
 
 ## OpenCode 采集
 
