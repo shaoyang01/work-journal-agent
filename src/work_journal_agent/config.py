@@ -44,6 +44,8 @@ class AiConfig:
     cache_enabled: bool
     cache_retention_days: int
     cache_dir: Path
+    cluster_review_enabled: bool
+    cluster_review_min_confidence: float
 
 
 @dataclass(frozen=True)
@@ -172,10 +174,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
             base_url=str(ai.get("base_url", "https://api.deepseek.com")),
             model=str(ai.get("model", "deepseek-v4-flash")),
             api_key_env=str(ai.get("api_key_env", "DEEPSEEK_API_KEY")),
-            timeout_seconds=int(ai.get("timeout_seconds", 30)),
+            timeout_seconds=int(ai.get("timeout_seconds", 120)),
             cache_enabled=bool(ai.get("cache_enabled", True)),
             cache_retention_days=max(1, int(ai.get("cache_retention_days", 7))),
             cache_dir=expand_path(ai.get("cache_dir", data_dir / "ai-cache"), base_dir=config_base),
+            cluster_review_enabled=bool(ai.get("cluster_review_enabled", True)),
+            cluster_review_min_confidence=min(1.0, max(0.0, float(ai.get("cluster_review_min_confidence", 0.75)))),
         ),
         sources=SourcesConfig(
             codex=CodexSourceConfig(

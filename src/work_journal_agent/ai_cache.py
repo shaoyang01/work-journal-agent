@@ -175,6 +175,10 @@ def ai_result_from_task(task: TaskSummary) -> dict[str, Any]:
         "request": task.ai_request,
         "decision": task.ai_decision,
         "outputs": task.ai_outputs,
+        "deliverables": task.ai_deliverables,
+        "impact": task.ai_impact,
+        "evidence": task.ai_evidence,
+        "artifact_paths": task.ai_artifact_paths,
         "next": task.ai_next,
         "next_actions": task.ai_next_actions,
         "blockers": task.ai_blockers,
@@ -189,6 +193,12 @@ def apply_cached_result(task: TaskSummary, result: dict[str, Any]) -> None:
     task.ai_request = text_or_none(result.get("request"))
     task.ai_decision = text_or_none(result.get("decision"))
     task.ai_outputs = string_list(result.get("outputs"))
+    task.ai_deliverables = string_list(result.get("deliverables"))
+    if not task.ai_deliverables and task.ai_outputs:
+        task.ai_deliverables = list(task.ai_outputs)
+    task.ai_impact = text_or_none(result.get("impact"))
+    task.ai_evidence = string_list(result.get("evidence"))
+    task.ai_artifact_paths = string_list(result.get("artifact_paths"))
     task.ai_next = text_or_none(result.get("next"))
     task.ai_next_actions = string_list(result.get("next_actions"))
     task.ai_blockers = string_list(result.get("blockers"))

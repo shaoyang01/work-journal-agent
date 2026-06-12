@@ -255,12 +255,18 @@ provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
-timeout_seconds = 30
+timeout_seconds = 120
 cache_enabled = true
 cache_retention_days = 7
+cluster_review_enabled = true
+cluster_review_min_confidence = 0.75
 ```
 
-DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。调用失败时会自动回退到本地规则摘要或已缓存结果。
+DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
+
+启用 `cluster_review_enabled` 后，生成 Daily 前会先让 DeepSeek 审查规则聚类结果。高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，日报仍会正常生成。
+
+DeepSeek 摘要还会识别重要产出：把“修改了哪些文件”提升为“真正完成了什么”，并在 Daily 中展示影响、验证证据和关键产物路径。旧缓存或旧模型只返回 `outputs` 时，会自动按旧字段回退展示。
 
 已经安装过之后，也可以只配置 DeepSeek：
 

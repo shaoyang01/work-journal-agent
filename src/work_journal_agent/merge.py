@@ -22,11 +22,16 @@ class TaskSummary:
     files: set[str] = field(default_factory=set)
     session_ids: set[str] = field(default_factory=set)
     event_ids: set[str] = field(default_factory=set)
+    events: list[WorkEvent] = field(default_factory=list)
     event_count: int = 0
     ai_title: str | None = None
     ai_request: str | None = None
     ai_decision: str | None = None
     ai_outputs: list[str] = field(default_factory=list)
+    ai_deliverables: list[str] = field(default_factory=list)
+    ai_impact: str | None = None
+    ai_evidence: list[str] = field(default_factory=list)
+    ai_artifact_paths: list[str] = field(default_factory=list)
     ai_next: str | None = None
     ai_next_actions: list[str] = field(default_factory=list)
     ai_blockers: list[str] = field(default_factory=list)
@@ -36,6 +41,7 @@ class TaskSummary:
 
     def add(self, event: WorkEvent) -> None:
         self.event_count += 1
+        self.events.append(event)
         self.event_ids.add(event.id)
         self.sources.add(event.source)
         session_id = event.metadata.get("session_id")
@@ -60,15 +66,37 @@ def group_events(events: list[WorkEvent], *, min_keyword_overlap: int = 1) -> li
     for event in sorted(events, key=lambda item: item.occurred_at):
         matched = find_matching_task(tasks, event, min_keyword_overlap=min_keyword_overlap)
         if matched is None:
-            matched = TaskSummary(
-                key=task_key(event),
-                title=title_from_summary(event.summary),
-                day=event.occurred_at.date(),
-                cwd=event.cwd,
-            )
+            matched = create_task(event)
             tasks.append(matched)
         matched.add(event)
     return tasks
+
+
+def create_task(event: WorkEvent, *, key: str | None = None, title: str | None = None) -> TaskSummary:
+    return TaskSummary(
+        key=key or task_key(event),
+        title=title or title_from_summary(event.summary),
+        day=event.occurred_at.date(),
+        cwd=event.cwd,
+    )
+
+
+def task_from_events(events: list[WorkEvent], *, key: str | None = None, title: str | None = None) -> TaskSummary:
+    if not events:
+        raise ValueError("events must not be empty")
+    sorted_events = sorted(events, key=lambda item: item.occurred_at)
+    task = create_task(sorted_events[0], key=key or task_key_for_events(sorted_events), title=title)
+    for event in sorted_events:
+        task.add(event)
+    return task
+
+
+def task_key_for_events(events: list[WorkEvent]) -> str:
+    if not events:
+        raise ValueError("events must not be empty")
+    first = sorted(events, key=lambda item: item.occurred_at)[0]
+    seed = "|".join([first.occurred_at.date().isoformat(), repo_identity(first.cwd), *sorted(event.id for event in events)])
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
 
 
 def find_matching_task(tasks: list[TaskSummary], event: WorkEvent, *, min_keyword_overlap: int) -> TaskSummary | None:

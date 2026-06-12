@@ -97,6 +97,29 @@ class WriterTests(unittest.TestCase):
         self.assertNotIn("- 待确认：", output)
         self.assertNotIn("- 验证缺口：", output)
 
+    def test_render_daily_prefers_important_deliverables(self):
+        task = TaskSummary(
+            key="k1",
+            title="DeepSeek 能力扩展",
+            day=date(2026, 6, 12),
+            cwd="/repo/work-journal-agent",
+            sources={"codex"},
+            event_count=5,
+            files={"/repo/work-journal-agent/src/work_journal_agent/ai.py"},
+            ai_outputs=["修改 ai.py"],
+            ai_deliverables=["实现重要产出识别"],
+            ai_impact="日报从文件列表升级为成果说明",
+            ai_evidence=["python3 -m unittest discover -s tests 通过"],
+            ai_artifact_paths=["src/work_journal_agent/ai.py"],
+        )
+
+        output = render_daily(date(2026, 6, 12), [task])
+
+        self.assertIn("- 产出：实现重要产出识别", output)
+        self.assertIn("- 影响：日报从文件列表升级为成果说明", output)
+        self.assertIn("- 证据：python3 -m unittest discover -s tests 通过", output)
+        self.assertIn("- 产物路径：src/work_journal_agent/ai.py", output)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,10 +35,12 @@ provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
-timeout_seconds = 30
+timeout_seconds = 120
 cache_enabled = true
 cache_retention_days = 7
 # cache_dir = "~/.local/share/work-journal-agent/ai-cache"
+cluster_review_enabled = true
+cluster_review_min_confidence = 0.75
 
 [sources.codex]
 enabled = true

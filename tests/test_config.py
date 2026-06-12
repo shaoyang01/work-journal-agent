@@ -88,6 +88,8 @@ class ConfigTests(unittest.TestCase):
                         "cache_enabled = true",
                         "cache_retention_days = 3",
                         'cache_dir = "cache"',
+                        "cluster_review_enabled = false",
+                        "cluster_review_min_confidence = 0.8",
                         "",
                         "[sources.codex]",
                         "enabled = false",
@@ -112,6 +114,8 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.ai.cache_enabled)
             self.assertEqual(config.ai.cache_retention_days, 3)
             self.assertEqual(config.ai.cache_dir, Path(temp_dir) / "cache")
+            self.assertFalse(config.ai.cluster_review_enabled)
+            self.assertEqual(config.ai.cluster_review_min_confidence, 0.8)
             self.assertFalse(config.sources.codex.enabled)
             self.assertEqual(config.sources.codex.sessions_root, Path(temp_dir) / "codex-sessions")
             self.assertTrue(config.sources.claude.enabled)

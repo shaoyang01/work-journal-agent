@@ -55,7 +55,7 @@ def render_task_brief(task: TaskSummary) -> str:
     project = repo_identity(task.cwd) or "unknown"
     request = task.ai_request or first_compact(task.raw_requests, fallback="未记录明确原始需求。")
     decision = task.ai_decision or compact_decision(task.decisions)
-    files = compact_ai_outputs(task) if task.ai_outputs else compact_files(task)
+    files = compact_deliverables(task)
     next_step = task.ai_next or "待确认。"
     lines = [
         f"### {display_title(task)}",
@@ -68,6 +68,12 @@ def render_task_brief(task: TaskSummary) -> str:
         f"- 产出：{files}",
         f"- 后续：{next_step}",
     ]
+    if task.ai_impact and task.ai_impact != "暂无明确影响":
+        lines.append(f"- 影响：{task.ai_impact}")
+    if task.ai_evidence:
+        lines.append(f"- 证据：{compact_followup_items(task.ai_evidence)}")
+    if task.ai_artifact_paths:
+        lines.append(f"- 产物路径：{compact_followup_items(task.ai_artifact_paths)}")
     lines.extend(render_followup_lines(task))
     return "\n".join(lines)
 
@@ -89,8 +95,17 @@ def render_task(task: TaskSummary) -> str:
     lines.extend(bullets(compact_items(task.discussions, limit=3), fallback="未记录关键过程。"))
     lines.extend(["", "### 最终结论"])
     lines.extend(bullets(compact_items(task.decisions, limit=3), fallback="暂无明确结论。"))
-    lines.extend(["", "### 产出"])
-    lines.extend(bullets(compact_items(relative_files(task), limit=8, char_limit=160), fallback="暂无文件产出记录。"))
+    lines.extend(["", "### 重要产出"])
+    lines.extend(bullets(compact_items(task.ai_deliverables or task.ai_outputs, limit=5, char_limit=160), fallback=compact_files(task)))
+    if task.ai_impact and task.ai_impact != "暂无明确影响":
+        lines.extend(["", "### 影响"])
+        lines.append(task.ai_impact)
+    if task.ai_evidence:
+        lines.extend(["", "### 证据"])
+        lines.extend(bullets(compact_items(task.ai_evidence, limit=5, char_limit=160), fallback="暂无证据记录。"))
+    if task.ai_artifact_paths:
+        lines.extend(["", "### 产物路径"])
+        lines.extend(bullets(compact_items(task.ai_artifact_paths, limit=8, char_limit=160), fallback="暂无产物路径记录。"))
     lines.extend(["", "### 后续"])
     followups = render_task_followup_bullets(task)
     lines.extend(followups if followups else ["- 待确认。"])
@@ -173,6 +188,11 @@ def display_title(task: TaskSummary) -> str:
 def compact_ai_outputs(task: TaskSummary) -> str:
     shown = compact_items(task.ai_outputs, limit=3, char_limit=90)
     return "；".join(shown) if shown else "暂无文件产出记录。"
+
+
+def compact_deliverables(task: TaskSummary) -> str:
+    shown = compact_items(task.ai_deliverables or task.ai_outputs, limit=3, char_limit=90)
+    return "；".join(shown) if shown else compact_files(task)
 
 
 def render_followup_lines(task: TaskSummary) -> list[str]:

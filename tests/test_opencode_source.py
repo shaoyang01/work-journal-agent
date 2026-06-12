@@ -177,10 +177,12 @@ def test_config(base: Path) -> AppConfig:
             base_url="https://api.deepseek.com",
             model="deepseek-v4-flash",
             api_key_env="DEEPSEEK_API_KEY",
-            timeout_seconds=30,
+            timeout_seconds=120,
             cache_enabled=True,
             cache_retention_days=7,
             cache_dir=base / "ai-cache",
+            cluster_review_enabled=True,
+            cluster_review_min_confidence=0.75,
         ),
         sources=SourcesConfig(
             codex=CodexSourceConfig(enabled=False, sessions_root=base / "sessions"),

@@ -13,7 +13,7 @@ from .events import WorkEvent, append_event, read_events, truncate_text
 from .merge import group_events
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
-from .ai import summarize_tasks
+from .ai import review_task_clusters, summarize_tasks
 from .sources.codex import collect_new_codex_events, import_codex_events
 from .sources.opencode import event_from_hook_payload, import_opencode_events, collect_new_opencode_events
 from .uninstall import run_uninstall
@@ -165,8 +165,12 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
+    cluster_result = review_task_clusters(config, tasks)
+    tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
     if args.dry_run:
+        if should_print_cluster_message(cluster_result.message):
+            print(cluster_result.message)
         if ai_result.enabled:
             print(ai_result.message)
         print(render_daily(args.date, tasks))
@@ -196,10 +200,14 @@ def cmd_sync(args: argparse.Namespace) -> None:
         events.extend(codex_result.events)
         events.extend(opencode_result.events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
+    cluster_result = review_task_clusters(config, tasks)
+    tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
     if args.dry_run:
         print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
         print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
+        if should_print_cluster_message(cluster_result.message):
+            print(cluster_result.message)
         if ai_result.enabled:
             print(ai_result.message)
         print(render_daily(args.date, tasks))
@@ -207,6 +215,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
     target = write_daily(config, args.date, tasks)
     print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
     print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
+    if should_print_cluster_message(cluster_result.message):
+        print(cluster_result.message)
     if ai_result.enabled:
         print(ai_result.message)
     print(str(target))
@@ -405,6 +415,10 @@ class EmptyImportResult:
 
 def empty_import_result(source: str) -> EmptyImportResult:
     return EmptyImportResult()
+
+
+def should_print_cluster_message(message: str) -> bool:
+    return bool(message) and message != "AI cluster review skipped" and message != "AI cluster review disabled"
 
 
 if __name__ == "__main__":

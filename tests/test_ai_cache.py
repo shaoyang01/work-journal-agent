@@ -61,7 +61,16 @@ class AiCacheTests(unittest.TestCase):
             entry = task_cache_entry(
                 task,
                 context={"key": "k1", "files": []},
-                ai_result={"title": "AI 标题", "outputs": ["产出"], "next_actions": ["下一步"], "owner_hint": "agent"},
+                ai_result={
+                    "title": "AI 标题",
+                    "outputs": ["产出"],
+                    "deliverables": ["重要产出"],
+                    "impact": "提升日报可读性",
+                    "evidence": ["49 tests OK"],
+                    "artifact_paths": ["src/work_journal_agent/ai.py"],
+                    "next_actions": ["下一步"],
+                    "owner_hint": "agent",
+                },
             )
 
             save_cache(cache_dir, date(2026, 6, 12), [entry])
@@ -70,6 +79,10 @@ class AiCacheTests(unittest.TestCase):
 
             self.assertEqual(task.ai_title, "AI 标题")
             self.assertEqual(task.ai_outputs, ["产出"])
+            self.assertEqual(task.ai_deliverables, ["重要产出"])
+            self.assertEqual(task.ai_impact, "提升日报可读性")
+            self.assertEqual(task.ai_evidence, ["49 tests OK"])
+            self.assertEqual(task.ai_artifact_paths, ["src/work_journal_agent/ai.py"])
             self.assertEqual(task.ai_next_actions, ["下一步"])
             self.assertEqual(task.ai_owner_hint, "agent")
 
