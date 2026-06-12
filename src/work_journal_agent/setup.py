@@ -69,6 +69,8 @@ def run_interactive_setup(
     daily_dir = ask_text("Daily 笔记目录名", "Daily", yes=yes)
     task_dir = ask_text("独立任务笔记目录名", "Tasks", yes=yes)
     write_task_notes = ask_bool("是否额外生成独立任务笔记", False, yes=yes)
+    knowledge_dir = ask_text("知识专题笔记目录名", "Knowledge", yes=yes)
+    write_knowledge_notes = ask_bool("是否允许写入 Knowledge 笔记（实验功能，默认关闭）", False, yes=yes)
     enable_ai = ask_bool("是否启用 DeepSeek AI 分析，让它帮助整理每日工作摘要", False, yes=yes)
     deepseek_api_key = ""
     if enable_ai:
@@ -116,6 +118,8 @@ def run_interactive_setup(
         daily_dir=daily_dir,
         task_dir=task_dir,
         write_task_notes=write_task_notes,
+        knowledge_dir=knowledge_dir,
+        write_knowledge_notes=write_knowledge_notes,
         enable_ai=enable_ai,
         enable_codex=enable_codex,
         codex_sessions_root=codex_sessions_root,
@@ -133,6 +137,8 @@ def run_interactive_setup(
         (obsidian_vault / daily_dir).mkdir(parents=True, exist_ok=True)
         if write_task_notes:
             (obsidian_vault / task_dir).mkdir(parents=True, exist_ok=True)
+        if write_knowledge_notes:
+            (obsidian_vault / knowledge_dir).mkdir(parents=True, exist_ok=True)
 
     if enable_claude_hooks and claude_settings_path:
         configure_claude_hooks(
@@ -198,6 +204,8 @@ def create_config(
     task_dir: str,
     write_task_notes: bool,
     enable_ai: bool,
+    knowledge_dir: str = "Knowledge",
+    write_knowledge_notes: bool = False,
     enable_codex: bool = True,
     codex_sessions_root: Path | None = None,
     enable_claude: bool = False,
@@ -222,6 +230,8 @@ def create_config(
             f'daily_dir = "{toml_string(daily_dir)}"',
             f'task_dir = "{toml_string(task_dir)}"',
             f"write_task_notes = {str(write_task_notes).lower()}",
+            f'knowledge_dir = "{toml_string(knowledge_dir)}"',
+            f"write_knowledge_notes = {str(write_knowledge_notes).lower()}",
             "",
             "[privacy]",
             "max_raw_request_chars = 500",
@@ -241,6 +251,7 @@ def create_config(
             "cache_retention_days = 7",
             "cluster_review_enabled = true",
             "cluster_review_min_confidence = 0.75",
+            "knowledge_enabled = false",
             "",
             "[sources.codex]",
             f"enabled = {str(enable_codex).lower()}",
@@ -291,6 +302,7 @@ def upsert_ai_config(text: str, *, enabled: bool) -> str:
             "cache_retention_days = 7",
             "cluster_review_enabled = true",
             "cluster_review_min_confidence = 0.75",
+            "knowledge_enabled = false",
             "",
         ]
     )

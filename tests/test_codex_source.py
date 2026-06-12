@@ -82,7 +82,7 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 def test_config(base: Path) -> AppConfig:
     return AppConfig(
         storage=StorageConfig(inbox_path=base / "events.jsonl", output_dir=base / "out"),
-        obsidian=ObsidianConfig(vault_path=None, daily_dir="Daily", task_dir="Tasks", write_task_notes=False),
+        obsidian=ObsidianConfig(vault_path=None, daily_dir="Daily", task_dir="Tasks", write_task_notes=False, knowledge_dir="Knowledge", write_knowledge_notes=False),
         privacy=PrivacyConfig(max_raw_request_chars=500, store_transcript_paths=True),
         merge=MergeConfig(min_keyword_overlap=1),
         ai=AiConfig(
@@ -97,6 +97,7 @@ def test_config(base: Path) -> AppConfig:
             cache_dir=base / "ai-cache",
             cluster_review_enabled=True,
             cluster_review_min_confidence=0.75,
+            knowledge_enabled=False,
         ),
         sources=SourcesConfig(
             codex=CodexSourceConfig(enabled=True, sessions_root=base / "sessions"),

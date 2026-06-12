@@ -36,8 +36,44 @@ class CliSourcesTests(unittest.TestCase):
             self.assertEqual(codex.call_args.kwargs["sessions_root"], base / "codex")
             self.assertEqual(opencode.call_args.kwargs["storage_root"], base / "opencode")
 
+    def test_sync_does_not_generate_knowledge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = write_config(Path(temp_dir), codex_enabled=False, opencode_enabled=False)
 
-def write_config(base: Path, *, codex_enabled: bool, opencode_enabled: bool) -> Path:
+            with patch("work_journal_agent.cli.generate_knowledge_topics") as knowledge:
+                with redirect_stdout(StringIO()):
+                    main(["--config", str(config_path), "sync", "--date", "2026-06-12", "--dry-run"])
+
+            knowledge.assert_not_called()
+
+    def test_generate_knowledge_uses_separate_command_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = write_config(Path(temp_dir), codex_enabled=False, opencode_enabled=False, knowledge_enabled=True, write_knowledge_notes=True)
+            knowledge_result = type("KnowledgeResult", (), {"enabled": True, "topics": [], "message": "AI knowledge notes generated 0 topic(s)"})()
+
+            with patch("work_journal_agent.cli.generate_knowledge_topics", return_value=knowledge_result) as knowledge, patch(
+                "work_journal_agent.cli.write_knowledge_topic_notes", return_value=[]
+            ) as writer:
+                with redirect_stdout(StringIO()):
+                    main(["--config", str(config_path), "generate-knowledge", "--date", "2026-06-12"])
+
+            knowledge.assert_called_once()
+            writer.assert_called_once()
+
+    def test_generate_knowledge_is_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = write_config(Path(temp_dir), codex_enabled=False, opencode_enabled=False)
+
+            with patch("work_journal_agent.cli.generate_knowledge_topics") as knowledge, patch("work_journal_agent.cli.write_knowledge_topic_notes") as writer:
+                with redirect_stdout(StringIO()) as stdout:
+                    main(["--config", str(config_path), "generate-knowledge", "--date", "2026-06-12"])
+
+            knowledge.assert_not_called()
+            writer.assert_not_called()
+            self.assertIn("disabled", stdout.getvalue())
+
+
+def write_config(base: Path, *, codex_enabled: bool, opencode_enabled: bool, knowledge_enabled: bool = False, write_knowledge_notes: bool = False) -> Path:
     config_path = base / "config.toml"
     inbox_path = base / "events.jsonl"
     output_dir = base / "out"
@@ -50,6 +86,10 @@ def write_config(base: Path, *, codex_enabled: bool, opencode_enabled: bool) -> 
                 "",
                 "[ai]",
                 "enabled = false",
+                f"knowledge_enabled = {str(knowledge_enabled).lower()}",
+                "",
+                "[obsidian]",
+                f"write_knowledge_notes = {str(write_knowledge_notes).lower()}",
                 "",
                 "[sources.codex]",
                 f"enabled = {str(codex_enabled).lower()}",

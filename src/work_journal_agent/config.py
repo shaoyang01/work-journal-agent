@@ -20,6 +20,8 @@ class ObsidianConfig:
     daily_dir: str
     task_dir: str
     write_task_notes: bool
+    knowledge_dir: str
+    write_knowledge_notes: bool
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class AiConfig:
     cache_dir: Path
     cluster_review_enabled: bool
     cluster_review_min_confidence: float
+    knowledge_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,8 @@ def load_config(config_path: Path | None = None) -> AppConfig:
             daily_dir=str(obsidian.get("daily_dir", "Daily")),
             task_dir=str(obsidian.get("task_dir", "Tasks")),
             write_task_notes=bool(obsidian.get("write_task_notes", False)),
+            knowledge_dir=str(obsidian.get("knowledge_dir", "Knowledge")),
+            write_knowledge_notes=bool(obsidian.get("write_knowledge_notes", False)),
         ),
         privacy=PrivacyConfig(
             max_raw_request_chars=int(privacy.get("max_raw_request_chars", 500)),
@@ -180,6 +185,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
             cache_dir=expand_path(ai.get("cache_dir", data_dir / "ai-cache"), base_dir=config_base),
             cluster_review_enabled=bool(ai.get("cluster_review_enabled", True)),
             cluster_review_min_confidence=min(1.0, max(0.0, float(ai.get("cluster_review_min_confidence", 0.75)))),
+            knowledge_enabled=bool(ai.get("knowledge_enabled", False)),
         ),
         sources=SourcesConfig(
             codex=CodexSourceConfig(

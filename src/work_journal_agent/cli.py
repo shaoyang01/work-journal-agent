@@ -13,11 +13,11 @@ from .events import WorkEvent, append_event, read_events, truncate_text
 from .merge import group_events
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
-from .ai import review_task_clusters, summarize_tasks
+from .ai import generate_knowledge_topics, review_task_clusters, summarize_tasks
 from .sources.codex import collect_new_codex_events, import_codex_events
 from .sources.opencode import event_from_hook_payload, import_opencode_events, collect_new_opencode_events
 from .uninstall import run_uninstall
-from .writers.obsidian import render_daily, write_daily
+from .writers.obsidian import render_daily, write_daily, write_knowledge_topic_notes
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--date", type=parse_date, default=date.today())
     generate_parser.add_argument("--dry-run", action="store_true")
     generate_parser.set_defaults(func=cmd_generate_daily)
+
+    knowledge_parser = subparsers.add_parser("generate-knowledge", help="Generate codebase knowledge notes")
+    knowledge_parser.add_argument("--date", type=parse_date, default=date.today())
+    knowledge_parser.add_argument("--dry-run", action="store_true")
+    knowledge_parser.set_defaults(func=cmd_generate_knowledge)
 
     sync_parser = subparsers.add_parser("sync", help="Import sources and generate today's note")
     sync_parser.add_argument("--date", type=parse_date, default=date.today())
@@ -175,8 +180,36 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
             print(ai_result.message)
         print(render_daily(args.date, tasks))
         return
-    target = write_daily(config, args.date, tasks)
+    target = write_daily(config, args.date, tasks, write_knowledge=False)
     print(str(target))
+
+
+def cmd_generate_knowledge(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    if not config.ai.knowledge_enabled:
+        print("AI knowledge notes disabled")
+        return
+    if not config.obsidian.write_knowledge_notes:
+        print("Knowledge notes disabled")
+        return
+    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
+    tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
+    ai_result = summarize_tasks(config, tasks)
+    knowledge_result = generate_knowledge_topics(config, tasks)
+    if args.dry_run:
+        if ai_result.enabled:
+            print(ai_result.message)
+        if knowledge_result.enabled:
+            print(knowledge_result.message)
+        print(render_daily(args.date, tasks))
+        return
+    targets = write_knowledge_topic_notes(config, args.date, tasks, topics=knowledge_result.topics if knowledge_result.enabled else [])
+    if ai_result.enabled:
+        print(ai_result.message)
+    if knowledge_result.enabled:
+        print(knowledge_result.message)
+    for target in targets:
+        print(str(target))
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
@@ -212,7 +245,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
             print(ai_result.message)
         print(render_daily(args.date, tasks))
         return
-    target = write_daily(config, args.date, tasks)
+    target = write_daily(config, args.date, tasks, write_knowledge=False)
     print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
     print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
     if should_print_cluster_message(cluster_result.message):

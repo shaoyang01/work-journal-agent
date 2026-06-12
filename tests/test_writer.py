@@ -1,9 +1,12 @@
 import unittest
 
 from datetime import date
+import tempfile
+from pathlib import Path
 
+from work_journal_agent.config import AppConfig, AiConfig, ClaudeSourceConfig, CodexSourceConfig, MergeConfig, ObsidianConfig, OpenCodeSourceConfig, PrivacyConfig, SourcesConfig, StorageConfig
 from work_journal_agent.merge import TaskSummary
-from work_journal_agent.writers.obsidian import compact_items, render_daily
+from work_journal_agent.writers.obsidian import compact_items, render_daily, write_daily
 
 
 class WriterTests(unittest.TestCase):
@@ -119,6 +122,166 @@ class WriterTests(unittest.TestCase):
         self.assertIn("- 影响：日报从文件列表升级为成果说明", output)
         self.assertIn("- 证据：python3 -m unittest discover -s tests 通过", output)
         self.assertIn("- 产物路径：src/work_journal_agent/ai.py", output)
+
+    def test_write_daily_does_not_generate_local_knowledge_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            task = TaskSummary(
+                key="k1",
+                title="DeepSeek 能力扩展",
+                day=date(2026, 6, 12),
+                cwd="/repo/work-journal-agent",
+                sources={"codex"},
+                event_count=5,
+                ai_deliverables=["实现知识专题沉淀"],
+                ai_impact="把时间线沉淀为专题知识",
+                ai_evidence=["53 tests OK"],
+                ai_artifact_paths=["src/work_journal_agent/writers/obsidian.py"],
+            )
+            config = test_config(base)
+
+            write_daily(config, date(2026, 6, 12), [task])
+            write_daily(config, date(2026, 6, 12), [task])
+
+            topic = base / "Knowledge" / "work-journal-agent" / "deepseek-能力扩展.md"
+            self.assertFalse(topic.exists())
+
+    def test_write_daily_uses_ai_knowledge_topics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            task = TaskSummary(
+                key="k1",
+                title="知识专题沉淀",
+                day=date(2026, 6, 12),
+                cwd="/repo/work-journal-agent",
+                sources={"codex"},
+                event_count=2,
+            )
+            topics = [
+                {
+                    "service": "work-journal-agent",
+                    "topic": "AI 结果缓存与知识提炼链路",
+                    "title": "AI 结果缓存与知识提炼链路",
+                    "problem_space": "work-journal-agent 在生成 Daily 后，需要把 DeepSeek 结构化结果转成长期代码库知识，而不是复制任务摘要。",
+                    "code_locations": ["src/work_journal_agent/ai.py -> 生成 DeepSeek 知识 Prompt 与缓存 key"],
+                    "core_logic": ["Knowledge 正文只写代码库逻辑、约定和判断标准，Daily、证据和产物路径只进入参考索引"],
+                    "usage_patterns": ["调整知识输出结构时，要同时升级 Prompt schema、缓存 hash 和 Writer 幂等标记"],
+                    "debugging_tips": ["如果正文出现任务完成情况，先检查 code_evidence 是否缺失"],
+                    "change_guidelines": ["知识卡片按 service 目录归档，topic 只决定目录下的专题文件"],
+                    "pitfalls": ["如果正文出现完成了什么功能，说明知识提炼退化成了日报摘要"],
+                    "open_questions": ["后续是否需要读取历史专题后再合并"],
+                    "evidence": ["54 tests OK"],
+                    "related_tasks": ["知识专题沉淀"],
+                    "artifact_paths": ["src/work_journal_agent/ai.py"],
+                }
+            ]
+
+            write_daily(test_config(base), date(2026, 6, 12), [task], knowledge_topics=topics)
+
+            content = (base / "Knowledge" / "work-journal-agent" / "ai-结果缓存与知识提炼链路.md").read_text(encoding="utf-8")
+            self.assertIn("# AI 结果缓存与知识提炼链路", content)
+            self.assertIn("### 专题定位", content)
+            self.assertIn("work-journal-agent 在生成 Daily 后，需要把 DeepSeek 结构化结果转成长期代码库知识", content)
+            self.assertIn("### 代码位置", content)
+            self.assertIn("src/work_journal_agent/ai.py -> 生成 DeepSeek 知识 Prompt 与缓存 key", content)
+            self.assertIn("### 核心逻辑", content)
+            self.assertIn("- Knowledge 正文只写代码库逻辑、约定和判断标准", content)
+            self.assertIn("### 使用与修改技巧", content)
+            self.assertIn("- 调整知识输出结构时，要同时升级 Prompt schema、缓存 hash 和 Writer 幂等标记", content)
+            self.assertIn("### 排障线索", content)
+            self.assertIn("如果正文出现任务完成情况", content)
+            self.assertIn("### 变更约束", content)
+            self.assertIn("知识卡片按 service 目录归档", content)
+            self.assertIn("### 常见坑", content)
+            self.assertIn("如果正文出现完成了什么功能", content)
+            self.assertIn("### 参考索引", content)
+            self.assertIn("#### 2026-06-12", content)
+            self.assertIn("- Daily：[[Daily/2026-06-12|2026-06-12]]", content)
+            self.assertLess(content.index("### 专题定位"), content.index("### 参考索引"))
+            self.assertNotIn("wja-knowledge", content)
+
+    def test_write_daily_migrates_old_knowledge_timeline_heading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            target = base / "Knowledge" / "work-journal-agent" / "ai-结果缓存与知识提炼链路.md"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "type: knowledge-topic",
+                        'topic: "work-journal-agent"',
+                        "---",
+                        "",
+                        "# work-journal-agent",
+                        "",
+                        "## 时间线",
+                        "",
+                        "<!-- wja-knowledge:2026-06-12:work-journal-agent -->",
+                        "### 2026-06-12 - 旧任务摘要",
+                        "",
+                        "- 摘要：旧格式像日报。",
+                        "<!-- /wja-knowledge:2026-06-12:work-journal-agent -->",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            topics = [
+                {
+                    "service": "work-journal-agent",
+                    "topic": "AI 结果缓存与知识提炼链路",
+                    "problem_space": "work-journal-agent 的知识输出应围绕代码库理解和 AI 调用链路组织。",
+                    "durable_insights": ["Knowledge 不能以时间线作为第一主体"],
+                    "evidence": ["用户反馈旧格式与任务摘要无区别"],
+                }
+            ]
+
+            write_daily(test_config(base), date(2026, 6, 12), [], knowledge_topics=topics)
+
+            content = target.read_text(encoding="utf-8")
+            self.assertNotIn("## 时间线", content)
+            self.assertIn("### 专题定位", content)
+            self.assertIn("work-journal-agent 的知识输出应围绕代码库理解和 AI 调用链路组织。", content)
+            self.assertIn("### 参考索引", content)
+            self.assertNotIn("旧格式像日报", content)
+            self.assertEqual(content.count("#### 2026-06-12"), 1)
+            self.assertNotIn("wja-knowledge", content)
+
+
+def test_config(base: Path) -> AppConfig:
+    return AppConfig(
+        storage=StorageConfig(inbox_path=base / "events.jsonl", output_dir=base),
+        obsidian=ObsidianConfig(
+            vault_path=None,
+            daily_dir="Daily",
+            task_dir="Tasks",
+            write_task_notes=False,
+            knowledge_dir="Knowledge",
+            write_knowledge_notes=True,
+        ),
+        privacy=PrivacyConfig(max_raw_request_chars=500, store_transcript_paths=True),
+        merge=MergeConfig(min_keyword_overlap=1),
+        ai=AiConfig(
+            enabled=False,
+            provider="deepseek",
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+            api_key_env="DEEPSEEK_API_KEY",
+            timeout_seconds=120,
+            cache_enabled=True,
+            cache_retention_days=7,
+            cache_dir=base / "ai-cache",
+            cluster_review_enabled=True,
+            cluster_review_min_confidence=0.75,
+            knowledge_enabled=False,
+        ),
+        sources=SourcesConfig(
+            codex=CodexSourceConfig(enabled=False, sessions_root=base / "codex"),
+            claude=ClaudeSourceConfig(enabled=False, settings_path=base / "claude.json"),
+            opencode=OpenCodeSourceConfig(enabled=False, storage_root=base / "opencode", plugin_path=base / "plugin.js"),
+        ),
+    )
 
 
 if __name__ == "__main__":

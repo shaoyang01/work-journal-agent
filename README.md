@@ -74,6 +74,8 @@ wj setup
 - Obsidian vault 路径。
 - Daily / Tasks 目录名。
 - 是否写独立任务笔记。
+- Knowledge 目录名。
+- 是否生成或更新知识专题笔记。
 - 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
 - 如果不启用 DeepSeek，则使用本地规则摘要。
 - 是否启用 Codex 采集；启用后会询问 sessions 根目录。
@@ -147,7 +149,7 @@ wj event add \
 wj sync
 ```
 
-它会先导入 Codex 当天 session 和 OpenCode 当天事件，再生成今天的 Obsidian Daily。
+它会先导入 Codex 当天 session 和 OpenCode 当天事件，再生成今天的 Obsidian Daily。Knowledge 不会在 `wj sync` 中生成，避免日报和知识沉淀共用一次长时间等待。
 
 手动预览：
 
@@ -160,6 +162,14 @@ wj sync --date 2026-06-11 --dry-run
 ```bash
 wj sync --date 2026-06-11
 ```
+
+实验性代码库知识生成默认关闭。只有同时开启 `[ai].knowledge_enabled` 和 `[obsidian].write_knowledge_notes` 后，才会单独生成 Knowledge：
+
+```bash
+wj generate-knowledge --date 2026-06-11
+```
+
+当前建议保持关闭，等知识沉淀策略明确后再启用。
 
 ## OpenCode 采集
 
@@ -260,6 +270,7 @@ cache_enabled = true
 cache_retention_days = 7
 cluster_review_enabled = true
 cluster_review_min_confidence = 0.75
+knowledge_enabled = false
 ```
 
 DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
@@ -267,6 +278,8 @@ DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 C
 启用 `cluster_review_enabled` 后，生成 Daily 前会先让 DeepSeek 审查规则聚类结果。高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，日报仍会正常生成。
 
 DeepSeek 摘要还会识别重要产出：把“修改了哪些文件”提升为“真正完成了什么”，并在 Daily 中展示影响、验证证据和关键产物路径。旧缓存或旧模型只返回 `outputs` 时，会自动按旧字段回退展示。
+
+Knowledge 生成功能目前是实验性能力，默认关闭。只有开启 `[ai].knowledge_enabled = true` 且 `[obsidian].write_knowledge_notes = true` 时，`wj generate-knowledge` 才会调用 DeepSeek；关闭时不会调用 DeepSeek，也不会执行本地 Knowledge 兜底写入。
 
 已经安装过之后，也可以只配置 DeepSeek：
 

@@ -7,7 +7,10 @@ from urllib.error import URLError
 from work_journal_agent.ai import (
     apply_ai_payload,
     apply_cluster_review_payload,
+    clean_knowledge_topics,
     clean_text_list,
+    generate_knowledge_topics,
+    knowledge_task_context,
     review_task_clusters,
     summarize_tasks,
     task_context,
@@ -360,11 +363,143 @@ class AiTests(unittest.TestCase):
             self.assertEqual(len(second.tasks), 1)
             self.assertIn("cached", second.message)
 
+    def test_clean_knowledge_topics_validates_payload(self):
+        topics = clean_knowledge_topics(
+            {
+                "topics": [
+                    {
+                        "topic": "AI 知识提炼链路",
+                        "service": "work-journal-agent",
+                        "title": "工作日志智能沉淀",
+                        "problem_space": "work-journal-agent 中 DeepSeek 结果如何从每日事件转为长期代码库知识。",
+                        "code_locations": ["src/work_journal_agent/ai.py -> DeepSeek Prompt 和缓存 schema"],
+                        "core_logic": "Knowledge 生成链路依赖结构化 Prompt、缓存 hash 和 Writer 三者一起演进",
+                        "usage_patterns": [{"scenario": "新增知识能力", "action": "先定义结构化 Prompt 和幂等 Writer，再用真实 Daily 验证输出形态"}],
+                        "debugging_tips": ["如果输出像日报，先检查 code_evidence 是否为空"],
+                        "change_guidelines": [{"decision": "使用 DeepSeek 生成代码库知识卡片", "rationale": "本地规则无法判断长期价值"}],
+                        "pitfalls": [{"risk": "专题退化为日报摘要", "prevention": "限制正文不能复述当天完成事项"}],
+                        "open_questions": ["是否需要合并历史专题内容"],
+                        "evidence": ["53 tests OK"],
+                        "related_tasks": ["知识专题沉淀"],
+                        "artifact_paths": ["src/work_journal_agent/ai.py"],
+                        "tags": ["obsidian"],
+                    }
+                ]
+            }
+        )
 
-def test_config(base: Path) -> AppConfig:
+        self.assertEqual(topics[0]["topic"], "AI 知识提炼链路")
+        self.assertEqual(topics[0]["service"], "work-journal-agent")
+        self.assertEqual(topics[0]["problem_space"], "work-journal-agent 中 DeepSeek 结果如何从每日事件转为长期代码库知识。")
+        self.assertEqual(topics[0]["code_locations"], ["src/work_journal_agent/ai.py -> DeepSeek Prompt 和缓存 schema"])
+        self.assertEqual(topics[0]["core_logic"], ["Knowledge 生成链路依赖结构化 Prompt、缓存 hash 和 Writer 三者一起演进"])
+        self.assertEqual(topics[0]["usage_patterns"], ["场景：新增知识能力；做法：先定义结构化 Prompt 和幂等 Writer，再用真实 Daily 验证输出形态"])
+        self.assertEqual(topics[0]["debugging_tips"], ["如果输出像日报，先检查 code_evidence 是否为空"])
+        self.assertEqual(topics[0]["change_guidelines"], ["决策：使用 DeepSeek 生成代码库知识卡片；理由：本地规则无法判断长期价值"])
+        self.assertEqual(topics[0]["pitfalls"], ["风险：专题退化为日报摘要；预防：限制正文不能复述当天完成事项"])
+        self.assertEqual(topics[0]["open_questions"], ["是否需要合并历史专题内容"])
+
+    def test_knowledge_task_context_includes_local_code_evidence(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            source = base / "src" / "GatewaySignatureFilter.java"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    [
+                        "package demo;",
+                        "public class GatewaySignatureFilter {",
+                        "  public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {",
+                        "    return chain.filter(exchange);",
+                        "  }",
+                        "}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            task = TaskSummary(
+                key="k1",
+                title="WebFlux 过滤器迁移",
+                day=date(2026, 6, 12),
+                cwd=str(base),
+                ai_artifact_paths=["src/GatewaySignatureFilter.java"],
+                ai_deliverables=["迁移过滤器"],
+            )
+
+            context = knowledge_task_context(task)
+
+            self.assertEqual(context["code_evidence"][0]["path"], "src/GatewaySignatureFilter.java")
+            self.assertIn("GatewaySignatureFilter", context["code_evidence"][0]["symbols"])
+            self.assertTrue(context["code_evidence"][0]["snippets"])
+
+    def test_generate_knowledge_topics_reuses_cache(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            task = TaskSummary(
+                key="k1",
+                title="知识专题沉淀",
+                day=date(2026, 6, 12),
+                cwd="/repo/work-journal-agent",
+                event_ids={"e1"},
+                ai_deliverables=["生成 Knowledge 专题"],
+                ai_impact="把时间线沉淀为知识库",
+            )
+            payload = {"topics": [{"service": "work-journal-agent", "topic": "知识专题沉淀", "summary": "知识沉淀", "key_points": ["专题更新"]}]}
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch(
+                "work_journal_agent.ai.call_deepseek_for_prompt",
+                return_value=payload,
+            ) as call:
+                first = generate_knowledge_topics(test_config(base, write_knowledge_notes=True, knowledge_enabled=True), [task])
+
+            self.assertEqual(call.call_count, 1)
+            self.assertTrue(first.used)
+            self.assertEqual(first.topics[0]["service"], "work-journal-agent")
+            self.assertEqual(first.topics[0]["topic"], "知识专题沉淀")
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch("work_journal_agent.ai.call_deepseek_for_prompt") as call:
+                second = generate_knowledge_topics(test_config(base, write_knowledge_notes=True, knowledge_enabled=True), [task])
+
+            call.assert_not_called()
+            self.assertIn("cache", second.message)
+
+    def test_generate_knowledge_topics_disabled_by_default(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            task = TaskSummary(
+                key="k1",
+                title="知识专题沉淀",
+                day=date(2026, 6, 12),
+                cwd="/repo/work-journal-agent",
+                event_ids={"e1"},
+                ai_deliverables=["生成 Knowledge 专题"],
+            )
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch("work_journal_agent.ai.call_deepseek_for_prompt") as call:
+                result = generate_knowledge_topics(test_config(base, write_knowledge_notes=True), [task])
+
+            call.assert_not_called()
+            self.assertFalse(result.enabled)
+            self.assertIn("disabled", result.message)
+
+
+def test_config(base: Path, *, write_knowledge_notes: bool = False, knowledge_enabled: bool = False) -> AppConfig:
     return AppConfig(
         storage=StorageConfig(inbox_path=base / "events.jsonl", output_dir=base / "out"),
-        obsidian=ObsidianConfig(vault_path=None, daily_dir="Daily", task_dir="Tasks", write_task_notes=False),
+        obsidian=ObsidianConfig(
+            vault_path=None,
+            daily_dir="Daily",
+            task_dir="Tasks",
+            write_task_notes=False,
+            knowledge_dir="Knowledge",
+            write_knowledge_notes=write_knowledge_notes,
+        ),
         privacy=PrivacyConfig(max_raw_request_chars=500, store_transcript_paths=True),
         merge=MergeConfig(min_keyword_overlap=1),
         ai=AiConfig(
@@ -379,6 +514,7 @@ def test_config(base: Path) -> AppConfig:
             cache_dir=base / "ai-cache",
             cluster_review_enabled=True,
             cluster_review_min_confidence=0.75,
+            knowledge_enabled=knowledge_enabled,
         ),
         sources=SourcesConfig(
             codex=CodexSourceConfig(enabled=False, sessions_root=base / "codex"),

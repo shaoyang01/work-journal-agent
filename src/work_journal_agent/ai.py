@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
+import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +44,14 @@ class ClusterReviewResult:
     message: str
 
 
+@dataclass(frozen=True)
+class KnowledgeNoteResult:
+    enabled: bool
+    used: bool
+    topics: list[dict[str, Any]]
+    message: str
+
+
 def summarize_tasks(config: AppConfig, tasks: list[TaskSummary]) -> AiSummaryResult:
     if not config.ai.enabled:
         return AiSummaryResult(enabled=False, used=False, message="AI summary disabled")
@@ -66,6 +77,36 @@ def summarize_tasks(config: AppConfig, tasks: list[TaskSummary]) -> AiSummaryRes
     if config.ai.cache_enabled:
         return AiSummaryResult(enabled=True, used=True, message=f"AI summary applied ({summarized} task(s) refreshed)")
     return AiSummaryResult(enabled=True, used=True, message="AI summary applied")
+
+
+def generate_knowledge_topics(config: AppConfig, tasks: list[TaskSummary]) -> KnowledgeNoteResult:
+    if not config.ai.knowledge_enabled:
+        return KnowledgeNoteResult(enabled=False, used=False, topics=[], message="AI knowledge notes disabled")
+    if not config.obsidian.write_knowledge_notes:
+        return KnowledgeNoteResult(enabled=False, used=False, topics=[], message="Knowledge notes disabled")
+    if not config.ai.enabled:
+        return KnowledgeNoteResult(enabled=False, used=False, topics=[], message="AI knowledge notes disabled")
+    if config.ai.provider != "deepseek":
+        return KnowledgeNoteResult(enabled=True, used=False, topics=[], message=f"Unsupported AI provider: {config.ai.provider}")
+    api_key = os.environ.get(config.ai.api_key_env)
+    if not api_key:
+        return KnowledgeNoteResult(enabled=True, used=False, topics=[], message=f"Missing API key env: {config.ai.api_key_env}")
+    candidates = [task for task in tasks if knowledge_task_context(task)]
+    if not candidates:
+        return KnowledgeNoteResult(enabled=True, used=False, topics=[], message="AI knowledge notes skipped")
+    try:
+        context = [knowledge_task_context(task) for task in candidates]
+        input_hash = context_hash({"knowledge_schema": 5, "knowledge": context})
+        cached = load_knowledge_cache(config, tasks, input_hash)
+        if cached is not None:
+            topics = clean_knowledge_topics(cached)
+            return KnowledgeNoteResult(enabled=True, used=True, topics=topics, message=f"AI knowledge notes reused cache ({len(topics)} topic(s))")
+        payload = call_deepseek_for_prompt(config, api_key, build_knowledge_prompt(context))
+        save_knowledge_cache(config, tasks, input_hash, payload)
+        topics = clean_knowledge_topics(payload)
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
+        return KnowledgeNoteResult(enabled=True, used=False, topics=[], message=f"AI knowledge notes failed: {exc}")
+    return KnowledgeNoteResult(enabled=True, used=True, topics=topics, message=f"AI knowledge notes generated {len(topics)} topic(s)")
 
 
 def review_task_clusters(config: AppConfig, tasks: list[TaskSummary]) -> ClusterReviewResult:
@@ -179,7 +220,7 @@ def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str) -> An
                 "role": "system",
                 "content": (
                     "你是一个严谨的工作日志整理助手。只根据输入摘要整理，不编造。"
-                    "输出必须是 JSON 数组，不要输出 Markdown。"
+                    "输出必须严格遵守用户要求的 JSON 结构，不要输出 Markdown。"
                 ),
             },
             {
@@ -199,10 +240,32 @@ def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str) -> An
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=config.ai.timeout_seconds) as response:
-        data = json.loads(response.read().decode("utf-8"))
+    with hard_timeout(config.ai.timeout_seconds):
+        with urllib.request.urlopen(request, timeout=config.ai.timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
     content = data["choices"][0]["message"]["content"]
     return parse_json_content(content)
+
+
+@contextmanager
+def hard_timeout(seconds: int):
+    if seconds <= 0 or not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"DeepSeek request exceeded {seconds}s")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 def build_prompt(tasks: list[TaskSummary]) -> str:
@@ -251,6 +314,336 @@ def build_incremental_prompt(items: list[dict[str, Any]]) -> str:
         "JSON 字段：key,title,request,decision,outputs,deliverables,impact,evidence,artifact_paths,next,next_actions,blockers,questions,validation_gaps,owner_hint。\n\n"
         + json.dumps(items, ensure_ascii=False)
     )
+
+
+def build_knowledge_prompt(context: list[dict[str, Any]]) -> str:
+    return (
+        "请从以下每日任务摘要中识别值得沉淀为 Obsidian 代码库知识库的内容。\n"
+        "要求：\n"
+        "1. 只输出 JSON 对象，字段 topics。\n"
+        "2. topics 最多 5 个；没有值得沉淀的内容则输出空数组。\n"
+        "3. 每个 topic 包含 service,topic,title,code_locations,core_logic,usage_patterns,debugging_tips,change_guidelines,pitfalls,open_questions,evidence,related_tasks,artifact_paths,tags。\n"
+        "4. service 必须来自输入任务的 project 字段，表示代码库或服务名；不同 service 不要混在同一个 topic。\n"
+        "5. topic 是 service 内稳定的代码库逻辑、业务规则、架构约束、排障技巧、测试门禁或实现约定；不要包含 service 名前缀，不要使用当天任务标题。\n"
+        "6. 只沉淀当前代码库长期有效的理解：例如模块职责、调用链、配置约定、兼容性边界、迁移检查项、排障路径、容易误判的业务规则。\n"
+        "7. 禁止把“完成了某功能、生成了某文档、发布了某版本、跑过某测试”写进正文；这些只能放在 evidence 或 related_tasks。\n"
+        "8. code_locations 写代码位置和职责，例如 类/方法/配置文件 -> 作用，不要只写文件名。\n"
+        "9. core_logic 写这个代码库当前已经能从输入证据中确认的核心逻辑，不要写任务完成情况。\n"
+        "10. usage_patterns 写下次修改、接入、迁移或排查时可复用的操作技巧。\n"
+        "11. debugging_tips 写定位问题的路径、优先检查点和容易误判之处。\n"
+        "12. change_guidelines 写修改这个代码库时应遵守的约定、兼容性边界和测试门禁。\n"
+        "13. pitfalls 写踩坑、风险和预防方式；open_questions 只写仍需验证的长期问题，没有输出空数组。\n"
+        "14. evidence 只写输入中出现的测试、真实执行、commit/tag、路径或结论证据。\n"
+        "15. artifact_paths 只放重要相对路径或短路径，禁止完整源码、完整 diff、token、密钥。\n"
+        "16. related_tasks 使用输入任务 title 或 key，仅用于参考索引，不要让正文像任务摘要。\n"
+        "17. 如果输入缺少 code_evidence，或者只能写成任务摘要，宁可不要输出这个 topic。\n\n"
+        + json.dumps(context, ensure_ascii=False)
+    )
+
+
+def knowledge_task_context(task: TaskSummary) -> dict[str, Any]:
+    values = {
+        "key": task.key,
+        "title": task.ai_title or task.title,
+        "project": repo_identity(task.cwd),
+        "request": task.ai_request or first_meaningful(task.raw_requests, char_limit=240),
+        "decision": task.ai_decision or "",
+        "deliverables": compact_items(task.ai_deliverables or task.ai_outputs, limit=5, char_limit=180),
+        "impact": task.ai_impact or "",
+        "evidence": compact_items(task.ai_evidence, limit=5, char_limit=180),
+        "artifact_paths": compact_items(task.ai_artifact_paths or relative_files(task), limit=8, char_limit=160),
+        "code_evidence": collect_code_evidence(task),
+        "next_actions": compact_items(task.ai_next_actions, limit=5, char_limit=160),
+        "blockers": compact_items(task.ai_blockers, limit=5, char_limit=160),
+    }
+    has_signal = any(values[key] for key in ("code_evidence", "deliverables", "impact", "evidence", "artifact_paths"))
+    return values if has_signal else {}
+
+
+def collect_code_evidence(task: TaskSummary) -> list[dict[str, Any]]:
+    cwd = Path(task.cwd).expanduser().resolve() if task.cwd else None
+    candidates = unique(task.ai_artifact_paths + relative_files(task))
+    evidence: list[dict[str, Any]] = []
+    query = " ".join(
+        [
+            task.ai_title or task.title,
+            task.ai_request or "",
+            task.ai_decision or "",
+            " ".join(task.ai_deliverables),
+            " ".join(task.ai_evidence),
+        ]
+    )
+    for raw_path in candidates:
+        path = resolve_artifact_path(raw_path, cwd)
+        if not path or not path.exists() or not path.is_file() or not is_supported_knowledge_file(path):
+            continue
+        item = code_evidence_for_file(path, cwd=cwd, query=query)
+        if item:
+            evidence.append(item)
+        if len(evidence) >= 4:
+            break
+    return evidence
+
+
+def resolve_artifact_path(value: str, cwd: Path | None) -> Path | None:
+    if not value or "\x00" in value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute() and cwd:
+        path = cwd / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def is_supported_knowledge_file(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix in {
+        ".java",
+        ".kt",
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".go",
+        ".sql",
+        ".xml",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".properties",
+        ".md",
+        ".html",
+        ".gradle",
+    }:
+        return True
+    return path.name in {"pom.xml", "build.gradle", "settings.gradle"}
+
+
+def code_evidence_for_file(path: Path, *, cwd: Path | None, query: str) -> dict[str, Any] | None:
+    try:
+        if path.stat().st_size > 256_000:
+            return None
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    text = redact_sensitive_lines(text)
+    if not text.strip():
+        return None
+    relative_path = str(path)
+    if cwd:
+        try:
+            relative_path = str(path.relative_to(cwd))
+        except ValueError:
+            pass
+    return {
+        "path": relative_path,
+        "kind": path.suffix.lower().lstrip(".") or path.name,
+        "symbols": extract_symbols(text, path),
+        "snippets": extract_relevant_snippets(text, query=query, limit=4, char_limit=1800),
+    }
+
+
+def redact_sensitive_lines(text: str) -> str:
+    sensitive = re.compile(r"(?i)(api[_-]?key|secret|token|password|authorization|private[_-]?key|access[_-]?key)")
+    lines: list[str] = []
+    for line in text.splitlines():
+        if sensitive.search(line):
+            lines.append("[redacted sensitive line]")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def extract_symbols(text: str, path: Path) -> list[str]:
+    patterns = [
+        r"\b(?:class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        r"\b(?:public|private|protected)?\s*(?:static\s+)?[\w<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*\{",
+        r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        r"\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        r"\bCREATE\s+TABLE\s+`?([A-Za-z_][A-Za-z0-9_]*)`?",
+    ]
+    result: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            name = match.group(1)
+            if name not in result:
+                result.append(name)
+            if len(result) >= 8:
+                return result
+    return result
+
+
+def extract_relevant_snippets(text: str, *, query: str, limit: int, char_limit: int) -> list[str]:
+    lines = text.splitlines()
+    terms = knowledge_terms(query)
+    declaration = re.compile(r"\b(class|interface|enum|def|function|CREATE TABLE|public|private|protected)\b", re.I)
+    selected_indexes: list[int] = []
+    for index, line in enumerate(lines):
+        normalized = line.lower()
+        if any(term in normalized for term in terms) or declaration.search(line):
+            selected_indexes.append(index)
+        if len(selected_indexes) >= limit:
+            break
+    snippets: list[str] = []
+    used_ranges: list[range] = []
+    for index in selected_indexes:
+        start = max(0, index - 2)
+        end = min(len(lines), index + 3)
+        current_range = range(start, end)
+        if any(ranges_overlap(current_range, used) for used in used_ranges):
+            continue
+        used_ranges.append(current_range)
+        snippet = "\n".join(f"{line_no + 1}: {truncate_text(lines[line_no], 180)}" for line_no in current_range if lines[line_no].strip())
+        if snippet:
+            snippets.append(truncate_text(snippet, char_limit))
+    if snippets:
+        return snippets
+    fallback_lines = [f"{idx + 1}: {truncate_text(line, 180)}" for idx, line in enumerate(lines[:40]) if line.strip()]
+    return [truncate_text("\n".join(fallback_lines[:20]), char_limit)] if fallback_lines else []
+
+
+def knowledge_terms(text: str) -> list[str]:
+    ascii_terms = [term for term in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", text.lower()) if len(term) >= 4]
+    chinese_terms = [term for term in re.findall(r"[\u4e00-\u9fff]{2,}", text) if len(term) >= 2]
+    return unique(ascii_terms + chinese_terms)[:20]
+
+
+def ranges_overlap(left: range, right: range) -> bool:
+    return left.start < right.stop and right.start < left.stop
+
+
+def knowledge_cache_path(config: AppConfig, tasks: list[TaskSummary]) -> Path:
+    day = tasks[0].day
+    return config.ai.cache_dir / "knowledge" / f"{day.isoformat()}.json"
+
+
+def load_knowledge_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str) -> Any | None:
+    if not config.ai.cache_enabled:
+        return None
+    path = knowledge_cache_path(config, tasks)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("input_hash") != input_hash:
+        return None
+    return payload.get("knowledge")
+
+
+def save_knowledge_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str, knowledge: Any) -> None:
+    if not config.ai.cache_enabled:
+        return
+    path = knowledge_cache_path(config, tasks)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": tasks[0].day.isoformat(),
+        "input_hash": input_hash,
+        "knowledge": knowledge,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    prune_cache(path.parent, keep_days=config.ai.cache_retention_days, today=tasks[0].day)
+
+
+def clean_knowledge_topics(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ValueError("AI knowledge response must be a JSON object")
+    topics = payload.get("topics")
+    if not isinstance(topics, list):
+        raise ValueError("AI knowledge response must contain topics")
+    result: list[dict[str, Any]] = []
+    for item in topics[:5]:
+        if not isinstance(item, dict):
+            continue
+        topic = clean_text(item.get("topic")) or clean_text(item.get("title"))
+        if not topic:
+            continue
+        core_logic = clean_knowledge_list(item.get("core_logic"), limit=8, char_limit=220)
+        result.append(
+            {
+                "service": clean_text(item.get("service")) or clean_text(item.get("project")) or clean_text(item.get("codebase")) or "",
+                "topic": topic,
+                "title": clean_text(item.get("title")) or topic,
+                "summary": clean_text(item.get("summary")) or "",
+                "problem_space": clean_text(item.get("problem_space")) or clean_text(item.get("summary")) or (core_logic[0] if core_logic else ""),
+                "code_locations": clean_knowledge_list(item.get("code_locations"), limit=8, char_limit=180),
+                "core_logic": core_logic,
+                "usage_patterns": clean_knowledge_list(item.get("usage_patterns") or item.get("playbook"), limit=8, char_limit=220),
+                "debugging_tips": clean_knowledge_list(item.get("debugging_tips"), limit=8, char_limit=220),
+                "change_guidelines": clean_knowledge_list(item.get("change_guidelines"), limit=8, char_limit=220),
+                "durable_insights": clean_knowledge_list(item.get("durable_insights") or item.get("key_points"), limit=8, char_limit=180),
+                "playbook": clean_knowledge_list(item.get("playbook"), limit=8, char_limit=220),
+                "decisions": clean_knowledge_list(item.get("decisions"), limit=6, char_limit=200),
+                "pitfalls": clean_knowledge_list(item.get("pitfalls"), limit=6, char_limit=200),
+                "open_questions": clean_knowledge_list(item.get("open_questions"), limit=6, char_limit=160),
+                "evidence": clean_knowledge_list(item.get("evidence"), limit=6, char_limit=180),
+                "related_tasks": clean_knowledge_list(item.get("related_tasks"), limit=6, char_limit=120),
+                "artifact_paths": clean_knowledge_list(item.get("artifact_paths"), limit=8, char_limit=160),
+                "tags": clean_knowledge_list(item.get("tags"), limit=8, char_limit=60),
+            }
+        )
+    return result
+
+
+def clean_knowledge_list(value: object, *, limit: int, char_limit: int) -> list[str]:
+    single = clean_knowledge_item(value)
+    if single:
+        return [truncate_text(single, char_limit)]
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        cleaned = clean_knowledge_item(item)
+        if not cleaned or is_low_value_text(cleaned):
+            continue
+        cleaned = truncate_text(cleaned, char_limit)
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def clean_knowledge_item(value: object) -> str | None:
+    cleaned = clean_text(value)
+    if cleaned:
+        return cleaned
+    if not isinstance(value, dict):
+        return None
+    labels = {
+        "scenario": "场景",
+        "when": "场景",
+        "action": "做法",
+        "practice": "做法",
+        "decision": "决策",
+        "rationale": "理由",
+        "tradeoff": "取舍",
+        "risk": "风险",
+        "pitfall": "坑点",
+        "prevention": "预防",
+        "caveat": "注意",
+        "question": "问题",
+        "evidence": "证据",
+        "path": "路径",
+    }
+    parts: list[str] = []
+    for key, label in labels.items():
+        text = clean_text(value.get(key))
+        if text:
+            parts.append(f"{label}：{text}")
+    if not parts:
+        for key in sorted(value):
+            text = clean_text(value.get(key))
+            if text:
+                parts.append(f"{key}：{text}")
+    return "；".join(parts) if parts else None
 
 
 def build_cluster_review_prompt(tasks: list[TaskSummary]) -> str:

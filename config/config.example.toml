@@ -16,6 +16,8 @@ vault_path = ""
 daily_dir = "Daily"
 task_dir = "Tasks"
 write_task_notes = false
+knowledge_dir = "Knowledge"
+write_knowledge_notes = false
 
 [privacy]
 # Keep raw user requests short. Set 0 to omit raw_request entirely.
@@ -41,6 +43,7 @@ cache_retention_days = 7
 # cache_dir = "~/.local/share/work-journal-agent/ai-cache"
 cluster_review_enabled = true
 cluster_review_min_confidence = 0.75
+knowledge_enabled = false
 
 [sources.codex]
 enabled = true
