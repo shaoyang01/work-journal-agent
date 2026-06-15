@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .config import AppConfig, default_config_path, default_data_dir, default_opencode_storage_root, expand_path, load_config
+from .config import AppConfig, default_config_path, default_data_dir, default_kun_storage_root, default_opencode_storage_root, default_zcode_storage_root, expand_path, load_config
 from .requirements import status_path
 from .setup import create_config, create_secrets_file, configure_claude_hooks, configure_opencode_plugin, default_opencode_plugin_path
 
@@ -51,6 +51,7 @@ def build_config_payload(config_path: Path | None = None) -> dict[str, Any]:
             "cache_enabled": config.ai.cache_enabled,
             "cache_retention_days": config.ai.cache_retention_days,
             "cluster_review_enabled": config.ai.cluster_review_enabled,
+            "cluster_review_timeout_seconds": config.ai.cluster_review_timeout_seconds,
             "cluster_review_min_confidence": config.ai.cluster_review_min_confidence,
             "knowledge_enabled": config.ai.knowledge_enabled,
             "has_api_key": has_deepseek_secret(secret_path),
@@ -69,6 +70,15 @@ def build_config_payload(config_path: Path | None = None) -> dict[str, Any]:
                 "storage_root": str(config.sources.opencode.storage_root),
                 "plugin_path": str(config.sources.opencode.plugin_path),
             },
+            "kun": {
+                "enabled": config.sources.kun.enabled,
+                "storage_root": str(config.sources.kun.storage_root),
+                "project_root": str(config.sources.kun.project_root),
+            },
+            "zcode": {
+                "enabled": config.sources.zcode.enabled,
+                "storage_root": str(config.sources.zcode.storage_root),
+            },
         },
     }
 
@@ -82,6 +92,8 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     codex = object_value(sources.get("codex"))
     claude = object_value(sources.get("claude"))
     opencode = object_value(sources.get("opencode"))
+    kun = object_value(sources.get("kun"))
+    zcode = object_value(sources.get("zcode"))
 
     inbox_path = path_value(storage.get("inbox_path"), default_data_dir() / "inbox" / "events.jsonl")
     output_dir = path_value(storage.get("output_dir"), default_data_dir() / "out")
@@ -93,6 +105,9 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     claude_settings_path = path_value(claude.get("settings_path"), Path.home() / ".claude" / "settings.json")
     opencode_storage_root = path_value(opencode.get("storage_root"), default_opencode_storage_root())
     opencode_plugin_path = path_value(opencode.get("plugin_path"), default_opencode_plugin_path())
+    kun_storage_root = path_value(kun.get("storage_root"), default_kun_storage_root())
+    kun_project_root = path_value(kun.get("project_root"), project_root)
+    zcode_storage_root = path_value(zcode.get("storage_root"), default_zcode_storage_root())
 
     create_config(
         config_path=path,
@@ -112,11 +127,17 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
         enable_opencode=bool(opencode.get("enabled", False)),
         opencode_storage_root=opencode_storage_root,
         opencode_plugin_path=opencode_plugin_path,
+        enable_kun=bool(kun.get("enabled", False)),
+        kun_storage_root=kun_storage_root,
+        kun_project_root=kun_project_root,
+        enable_zcode=bool(zcode.get("enabled", False)),
+        zcode_storage_root=zcode_storage_root,
         ai_model=str_value(ai.get("model"), "deepseek-v4-flash"),
-        ai_timeout_seconds=int_value(ai.get("timeout_seconds"), 120),
+        ai_timeout_seconds=int_value(ai.get("timeout_seconds"), 180),
         ai_cache_enabled=bool(ai.get("cache_enabled", True)),
         ai_cache_retention_days=int_value(ai.get("cache_retention_days"), 7),
         ai_cluster_review_enabled=bool(ai.get("cluster_review_enabled", True)),
+        ai_cluster_review_timeout_seconds=int_value(ai.get("cluster_review_timeout_seconds"), 240),
         ai_cluster_review_min_confidence=float_value(ai.get("cluster_review_min_confidence"), 0.75),
         ai_knowledge_enabled=bool(ai.get("knowledge_enabled", False)),
     )

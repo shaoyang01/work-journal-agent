@@ -39,10 +39,11 @@ private struct WorkJournalConfig {
     var baseUrl = "https://api.deepseek.com"
     var model = "deepseek-v4-flash"
     var apiKeyEnv = "DEEPSEEK_API_KEY"
-    var timeoutSeconds = "120"
+    var timeoutSeconds = "180"
     var cacheEnabled = true
     var cacheRetentionDays = "7"
     var clusterReviewEnabled = true
+    var clusterReviewTimeoutSeconds = "240"
     var clusterReviewMinConfidence = "0.75"
     var knowledgeEnabled = false
 
@@ -53,6 +54,11 @@ private struct WorkJournalConfig {
     var opencodeEnabled = defaultOpenCodeEnabled()
     var opencodeStorageRoot = "~/.local/share/opencode/storage"
     var opencodePluginPath = "~/.config/opencode/plugins/work-journal-agent.js"
+    var kunEnabled = defaultKunEnabled()
+    var kunStorageRoot = "~/.kun/data"
+    var kunProjectRoot = AppPaths.projectRoot
+    var zcodeEnabled = defaultZCodeEnabled()
+    var zcodeStorageRoot = "~/.zcode/cli"
 
     static func load() -> WorkJournalConfig {
         var config = WorkJournalConfig()
@@ -79,6 +85,7 @@ private struct WorkJournalConfig {
         config.cacheEnabled = sections.bool("ai", "cache_enabled", config.cacheEnabled)
         config.cacheRetentionDays = sections.value("ai", "cache_retention_days", config.cacheRetentionDays)
         config.clusterReviewEnabled = sections.bool("ai", "cluster_review_enabled", config.clusterReviewEnabled)
+        config.clusterReviewTimeoutSeconds = sections.value("ai", "cluster_review_timeout_seconds", config.clusterReviewTimeoutSeconds)
         config.clusterReviewMinConfidence = sections.value("ai", "cluster_review_min_confidence", config.clusterReviewMinConfidence)
         config.knowledgeEnabled = sections.bool("ai", "knowledge_enabled", config.knowledgeEnabled)
 
@@ -89,6 +96,11 @@ private struct WorkJournalConfig {
         config.opencodeEnabled = sections.bool("sources.opencode", "enabled", config.opencodeEnabled)
         config.opencodeStorageRoot = sections.value("sources.opencode", "storage_root", config.opencodeStorageRoot)
         config.opencodePluginPath = sections.value("sources.opencode", "plugin_path", config.opencodePluginPath)
+        config.kunEnabled = sections.bool("sources.kun", "enabled", config.kunEnabled)
+        config.kunStorageRoot = sections.value("sources.kun", "storage_root", config.kunStorageRoot)
+        config.kunProjectRoot = sections.value("sources.kun", "project_root", config.kunProjectRoot)
+        config.zcodeEnabled = sections.bool("sources.zcode", "enabled", config.zcodeEnabled)
+        config.zcodeStorageRoot = sections.value("sources.zcode", "storage_root", config.zcodeStorageRoot)
         return config
     }
 
@@ -119,10 +131,11 @@ private struct WorkJournalConfig {
         base_url = "\(tomlString(baseUrl))"
         model = "\(tomlString(model))"
         api_key_env = "\(tomlString(apiKeyEnv))"
-        timeout_seconds = \(intText(timeoutSeconds, fallback: "120"))
+        timeout_seconds = \(intText(timeoutSeconds, fallback: "180"))
         cache_enabled = \(cacheEnabled.toml)
         cache_retention_days = \(intText(cacheRetentionDays, fallback: "7"))
         cluster_review_enabled = \(clusterReviewEnabled.toml)
+        cluster_review_timeout_seconds = \(intText(clusterReviewTimeoutSeconds, fallback: "240"))
         cluster_review_min_confidence = \(doubleText(clusterReviewMinConfidence, fallback: "0.75"))
         knowledge_enabled = \(knowledgeEnabled.toml)
 
@@ -138,6 +151,15 @@ private struct WorkJournalConfig {
         enabled = \(opencodeEnabled.toml)
         storage_root = "\(tomlString(opencodeStorageRoot))"
         plugin_path = "\(tomlString(opencodePluginPath))"
+
+        [sources.kun]
+        enabled = \(kunEnabled.toml)
+        storage_root = "\(tomlString(kunStorageRoot))"
+        project_root = "\(tomlString(kunProjectRoot))"
+
+        [sources.zcode]
+        enabled = \(zcodeEnabled.toml)
+        storage_root = "\(tomlString(zcodeStorageRoot))"
         """
     }
 }
@@ -267,6 +289,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     private var modelField = NSTextField()
     private var apiKeyField = NSSecureTextField()
     private var timeoutField = NSTextField()
+    private var clusterTimeoutField = NSTextField()
     private var cacheSwitch = NSSwitch()
     private var cacheDaysField = NSTextField()
     private var clusterSwitch = NSSwitch()
@@ -365,7 +388,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         title.textColor = Color.primaryText
         documentView.addSubview(title)
 
-        let subtitle = NSTextField(labelWithString: "配置 Work Journal Agent 如何读取本机事件、写入 Obsidian，并可选启用 DeepSeek 摘要。")
+        let subtitle = NSTextField(labelWithString: "配置 Work Journal Agent 如何读取本机事件、写入 Obsidian，并可选启用 DeepSeek 分析。")
         subtitle.frame = NSRect(x: 34, y: y - 30, width: 650, height: 20)
         subtitle.font = NSFont.systemFont(ofSize: 13)
         subtitle.textColor = Color.secondaryText
@@ -426,9 +449,9 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     }
 
     private func addAISection(y: CGFloat) {
-        let section = sectionView(title: "AI", subtitle: "可选启用 DeepSeek，把事件整理成更清晰的每日摘要。", y: y, height: 282)
+        let section = sectionView(title: "AI", subtitle: "可选启用 DeepSeek，复核需求聚类并整理每日摘要。", y: y, height: 282)
         aiSwitch = switchControl()
-        addSwitchRow(to: section, y: 204, label: "启用 DeepSeek 摘要", detail: "只发送压缩后的任务事件，不上传完整聊天全文。", control: aiSwitch)
+        addSwitchRow(to: section, y: 204, label: "启用 DeepSeek", detail: "只发送压缩后的任务事件，不上传完整聊天全文。", control: aiSwitch)
 
         providerField = textField(width: 150)
         modelField = textField(width: 200)
@@ -436,9 +459,10 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         addInlineFields(to: section, y: 150, fields: [("Provider", providerField), ("Model", modelField), ("Base URL", baseUrlField)])
 
         apiKeyField = secureField(width: 352)
-        timeoutField = textField(width: 110)
-        cacheDaysField = textField(width: 110)
-        addInlineFields(to: section, y: 96, fields: [("API Key", apiKeyField), ("超时秒数", timeoutField), ("缓存天数", cacheDaysField)])
+        timeoutField = textField(width: 90)
+        clusterTimeoutField = textField(width: 110)
+        cacheDaysField = textField(width: 90)
+        addInlineFields(to: section, y: 96, fields: [("API Key", apiKeyField), ("通用超时", timeoutField), ("聚类超时", clusterTimeoutField), ("缓存天数", cacheDaysField)])
 
         cacheSwitch = switchControl()
         clusterSwitch = switchControl()
@@ -516,6 +540,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         apiKeyField.stringValue = ""
         apiKeyField.placeholderString = FileManager.default.fileExists(atPath: AppPaths.secretsPath.path) ? "已保存，留空保持不变" : "未保存"
         timeoutField.stringValue = config.timeoutSeconds
+        clusterTimeoutField.stringValue = config.clusterReviewTimeoutSeconds
         cacheSwitch.state = config.cacheEnabled ? .on : .off
         cacheDaysField.stringValue = config.cacheRetentionDays
         clusterSwitch.state = config.clusterReviewEnabled ? .on : .off
@@ -546,6 +571,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         next.baseUrl = baseUrlField.stringValue
         next.model = modelField.stringValue
         next.timeoutSeconds = timeoutField.stringValue
+        next.clusterReviewTimeoutSeconds = clusterTimeoutField.stringValue
         next.cacheEnabled = cacheSwitch.state == .on
         next.cacheRetentionDays = cacheDaysField.stringValue
         next.clusterReviewEnabled = clusterSwitch.state == .on
@@ -1651,19 +1677,22 @@ private struct WorkJournalSettingsView: View {
             sourceRow(title: "Codex", detail: "读取 ~/.codex/sessions 中的会话事件。", isOn: $draft.codexEnabled, text: $draft.codexSessionsRoot, chooser: .codexSessions, status: pathStatus(draft.codexSessionsRoot, directory: true))
             sourceRow(title: "Claude Code", detail: "配置 hooks 写入 Work Journal inbox。", isOn: $draft.claudeEnabled, text: $draft.claudeSettingsPath, chooser: .claudeSettings, status: pathStatus(draft.claudeSettingsPath, directory: false))
             sourceRow(title: "OpenCode", detail: "导入 OpenCode 本地 storage 事件。", isOn: $draft.opencodeEnabled, text: $draft.opencodeStorageRoot, chooser: .opencodeStorage, status: pathStatus(draft.opencodeStorageRoot, directory: true))
+            sourceRow(title: "Kun", detail: "导入 Kun threads 与项目 .kunsdd 需求文档。", isOn: $draft.kunEnabled, text: $draft.kunStorageRoot, chooser: .kunStorage, status: pathStatus(draft.kunStorageRoot, directory: true))
+            sourceRow(title: "ZCode", detail: "导入 ZCode 本地 sqlite 会话与工具事件。", isOn: $draft.zcodeEnabled, text: $draft.zcodeStorageRoot, chooser: .zcodeStorage, status: pathStatus(draft.zcodeStorageRoot, directory: true))
         }
     }
 
     private var aiCard: some View {
-        SettingsCard(title: "AI 设置", subtitle: "可选启用 DeepSeek 摘要，只发送压缩后的任务事件。") {
-            toggleRow("启用 DeepSeek", detail: "生成更清晰的每日摘要。", isOn: $draft.aiEnabled)
+        SettingsCard(title: "AI 设置", subtitle: "可选启用 DeepSeek 复核需求聚类并生成摘要。") {
+            toggleRow("启用 DeepSeek", detail: "只发送压缩后的任务事件，不上传完整聊天全文。", isOn: $draft.aiEnabled)
             HStack(spacing: 14) {
                 compactField("Provider", text: $draft.provider)
                 compactField("Model", text: $draft.model)
                 compactField("Base URL", text: $draft.baseUrl)
             }
             HStack(spacing: 14) {
-                compactField("超时秒数", text: $draft.timeoutSeconds, width: 130)
+                compactField("通用超时", text: $draft.timeoutSeconds, width: 130)
+                compactField("聚类超时", text: $draft.clusterReviewTimeoutSeconds, width: 130)
                 compactField("缓存天数", text: $draft.cacheRetentionDays, width: 130)
                 Spacer()
             }
@@ -1685,10 +1714,11 @@ private struct WorkJournalSettingsView: View {
     }
 
     private var pathsCard: some View {
-        SettingsCard(title: "路径", subtitle: "配置事件 inbox、备用输出目录和 OpenCode 插件文件。") {
+        SettingsCard(title: "路径", subtitle: "配置事件 inbox、备用输出目录、OpenCode 插件和 Kun 项目目录。") {
             fieldRow("Inbox JSONL", text: $draft.inboxPath, chooser: .inbox)
             fieldRow("备用输出目录", text: $draft.outputDir, chooser: .output)
             fieldRow("OpenCode 插件", text: $draft.opencodePluginPath, chooser: .opencodePlugin)
+            fieldRow("Kun 项目根目录", text: $draft.kunProjectRoot, chooser: .kunProjectRoot)
         }
     }
 
@@ -1951,9 +1981,12 @@ private struct WorkJournalSettingsView: View {
             case .codexSessions: draft.codexSessionsRoot = path
             case .claudeSettings: draft.claudeSettingsPath = path
             case .opencodeStorage: draft.opencodeStorageRoot = path
+            case .kunStorage: draft.kunStorageRoot = path
+            case .zcodeStorage: draft.zcodeStorageRoot = path
             case .inbox: draft.inboxPath = path
             case .output: draft.outputDir = path
             case .opencodePlugin: draft.opencodePluginPath = path
+            case .kunProjectRoot: draft.kunProjectRoot = path
             }
             statusMessage = "有未保存修改"
         }
@@ -2001,15 +2034,18 @@ private enum PathTarget {
     case codexSessions
     case claudeSettings
     case opencodeStorage
+    case kunStorage
+    case zcodeStorage
     case inbox
     case output
     case opencodePlugin
+    case kunProjectRoot
 
     var canChooseFiles: Bool {
         switch self {
         case .claudeSettings, .inbox, .opencodePlugin:
             return true
-        case .vault, .codexSessions, .opencodeStorage, .output:
+        case .vault, .codexSessions, .opencodeStorage, .kunStorage, .zcodeStorage, .output, .kunProjectRoot:
             return false
         }
     }
@@ -2140,6 +2176,15 @@ private func defaultOpenCodeEnabled() -> Bool {
     let storage = AppPaths.home.appendingPathComponent(".local/share/opencode/storage").path
     let pluginDir = AppPaths.home.appendingPathComponent(".config/opencode/plugins").path
     return FileManager.default.fileExists(atPath: storage) || FileManager.default.fileExists(atPath: pluginDir)
+}
+
+private func defaultKunEnabled() -> Bool {
+    FileManager.default.fileExists(atPath: AppPaths.home.appendingPathComponent(".kun/data").path)
+        || FileManager.default.fileExists(atPath: AppPaths.home.appendingPathComponent(".deepseekgui/kun").path)
+}
+
+private func defaultZCodeEnabled() -> Bool {
+    FileManager.default.fileExists(atPath: AppPaths.home.appendingPathComponent(".zcode/cli").path)
 }
 
 private func expandTilde(_ value: String) -> String {

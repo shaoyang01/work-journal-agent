@@ -39,6 +39,7 @@ class GuiConfigTests(unittest.TestCase):
                         "cache_enabled": True,
                         "cache_retention_days": 7,
                         "cluster_review_enabled": True,
+                        "cluster_review_timeout_seconds": 300,
                         "cluster_review_min_confidence": 0.75,
                         "knowledge_enabled": False,
                         "api_key": "test-key",
@@ -57,6 +58,15 @@ class GuiConfigTests(unittest.TestCase):
                             "storage_root": str(base / "opencode-storage"),
                             "plugin_path": str(base / "opencode.js"),
                         },
+                        "kun": {
+                            "enabled": True,
+                            "storage_root": str(base / "kun-storage"),
+                            "project_root": str(base / "repo-a"),
+                        },
+                        "zcode": {
+                            "enabled": True,
+                            "storage_root": str(base / "zcode-cli"),
+                        },
                     },
                 }
 
@@ -66,6 +76,12 @@ class GuiConfigTests(unittest.TestCase):
                 self.assertEqual(saved["ai"]["model"], "deepseek-v4-pro")
                 self.assertEqual(config.ai.model, "deepseek-v4-pro")
                 self.assertEqual(config.ai.timeout_seconds, 120)
+                self.assertEqual(config.ai.cluster_review_timeout_seconds, 300)
+                self.assertTrue(config.sources.kun.enabled)
+                self.assertEqual(config.sources.kun.storage_root, base / "kun-storage")
+                self.assertEqual(config.sources.kun.project_root, base / "repo-a")
+                self.assertTrue(config.sources.zcode.enabled)
+                self.assertEqual(config.sources.zcode.storage_root, base / "zcode-cli")
                 self.assertTrue((config_path.parent / "secrets.env").exists())
             finally:
                 restore_env("XDG_CONFIG_HOME", old_config_home)

@@ -82,6 +82,56 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].title, "排查网关 SSO 无权限与跨系统登录态")
 
+    def test_group_different_agent_sessions_separately_before_ai_review(self):
+        first = WorkEvent.create(
+            source="zcode",
+            event_type="user_prompt",
+            occurred_at=datetime.fromisoformat("2026-06-11T09:00:00+08:00"),
+            cwd="/repo/logistics-center",
+            summary="排查订单 RPC 查询异常",
+            raw_request="排查订单 RPC 查询异常",
+            metadata={"session_id": "sess_a"},
+        )
+        second = WorkEvent.create(
+            source="zcode",
+            event_type="user_prompt",
+            occurred_at=datetime.fromisoformat("2026-06-11T09:30:00+08:00"),
+            cwd="/repo/logistics-center",
+            summary="排查订单 RPC 查询异常并补充日志",
+            raw_request="排查订单 RPC 查询异常并补充日志",
+            metadata={"session_id": "sess_b"},
+        )
+
+        tasks = group_events([first, second], min_keyword_overlap=1)
+
+        self.assertEqual(len(tasks), 2)
+
+    def test_group_different_branches_separately(self):
+        first = WorkEvent.create(
+            source="claude",
+            event_type="user_prompt",
+            occurred_at=datetime.fromisoformat("2026-06-11T09:00:00+08:00"),
+            cwd="/repo/logistics-center",
+            summary="排查订单 RPC 查询异常",
+            raw_request="排查订单 RPC 查询异常",
+            files=["src/main/java/demo/LcOrderRPCService.java"],
+            metadata={"branch": "feature/order-rpc"},
+        )
+        second = WorkEvent.create(
+            source="codex",
+            event_type="user_prompt",
+            occurred_at=datetime.fromisoformat("2026-06-11T09:30:00+08:00"),
+            cwd="/repo/logistics-center",
+            summary="排查订单 RPC 查询异常",
+            raw_request="排查订单 RPC 查询异常",
+            files=["src/main/java/demo/LcOrderRPCService.java"],
+            metadata={"branch": "feature/order-review"},
+        )
+
+        tasks = group_events([first, second], min_keyword_overlap=1)
+
+        self.assertEqual(len(tasks), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

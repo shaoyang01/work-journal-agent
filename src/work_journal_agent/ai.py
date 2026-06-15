@@ -134,7 +134,12 @@ def review_task_clusters(config: AppConfig, tasks: list[TaskSummary]) -> Cluster
                 tasks=reviewed_tasks,
                 message=f"AI cluster review reused cached adjustment ({len(reviewed_tasks)} task group(s))",
             )
-        payload = call_deepseek_for_prompt(config, api_key, build_cluster_review_prompt_from_context(review_context))
+        payload = call_deepseek_for_prompt(
+            config,
+            api_key,
+            build_cluster_review_prompt_from_context(review_context),
+            timeout_seconds=config.ai.cluster_review_timeout_seconds,
+        )
         save_cluster_review_cache(config, tasks, input_hash, payload)
         reviewed_tasks = apply_cluster_review_payload(tasks, payload, min_confidence=config.ai.cluster_review_min_confidence)
     except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
@@ -212,7 +217,8 @@ def call_deepseek(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> 
     return call_deepseek_for_prompt(config, api_key, build_prompt(tasks))
 
 
-def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str) -> Any:
+def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str, *, timeout_seconds: int | None = None) -> Any:
+    timeout = timeout_seconds if timeout_seconds is not None else config.ai.timeout_seconds
     body = {
         "model": config.ai.model,
         "messages": [
@@ -240,8 +246,8 @@ def call_deepseek_for_prompt(config: AppConfig, api_key: str, prompt: str) -> An
         },
         method="POST",
     )
-    with hard_timeout(config.ai.timeout_seconds):
-        with urllib.request.urlopen(request, timeout=config.ai.timeout_seconds) as response:
+    with hard_timeout(timeout):
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     content = data["choices"][0]["message"]["content"]
     return parse_json_content(content)
@@ -659,8 +665,9 @@ def build_cluster_review_prompt_from_context(context: list[dict[str, Any]]) -> s
         "3. groups 是数组，每个对象包含 title,event_ids,confidence,reason。\n"
         "4. event_ids 只能使用输入中出现的 id；同一个 event_id 只能出现在一个高置信度 group 中。\n"
         "5. confidence 范围 0-1。只有你非常确定同属一个任务或必须拆分时，confidence 才应 >= 0.75。\n"
-        "6. 低置信度时保留原聚类：输出原任务对应的 event_ids，confidence 低于 0.75，并说明原因。\n"
-        "7. 不要输出 Markdown，不要输出解释性正文。\n\n"
+        "6. branch 不同通常代表不同需求；除非用户输入明确说明是同一需求跨分支处理，否则不要合并。\n"
+        "7. 低置信度时保留原聚类：输出原任务对应的 event_ids，confidence 低于 0.75，并说明原因。\n"
+        "8. 不要输出 Markdown，不要输出解释性正文。\n\n"
         + json.dumps(context, ensure_ascii=False)
     )
 
@@ -708,13 +715,31 @@ def cluster_review_context(tasks: list[TaskSummary]) -> list[dict[str, Any]]:
                 "title": task.title,
                 "project": repo_identity(task.cwd),
                 "sources": sorted(task.sources),
+                "event_count": task.event_count,
                 "event_ids": sorted(task.event_ids),
                 "session_ids": sorted(task.session_ids),
+                "branches": sorted(task.branches),
                 "files": compact_items(relative_files(task), limit=8, char_limit=140),
-                "events": [event_review_context(event) for event in task.events[:8]],
+                "primary_request": first_meaningful(task.raw_requests, char_limit=260),
+                "recent_decisions": select_latest_meaningful(task.decisions, limit=2, char_limit=180),
+                "events": [event_review_context(event) for event in cluster_review_events(task)],
             }
         )
     return result
+
+
+def cluster_review_events(task: TaskSummary) -> list[WorkEvent]:
+    selected: list[WorkEvent] = []
+    for event in task.events:
+        if event.event_type not in {"user_prompt", "conclusion", "assistant_stop", "session_end", "note"}:
+            continue
+        text = " ".join([event.raw_request or "", event.summary or "", event.decision or ""])
+        if is_noise_item(text) or is_low_value_text(text):
+            continue
+        selected.append(event)
+        if len(selected) >= 4:
+            return selected
+    return task.events[: min(3, len(task.events))]
 
 
 def event_review_context(event: WorkEvent) -> dict[str, Any]:
@@ -722,11 +747,12 @@ def event_review_context(event: WorkEvent) -> dict[str, Any]:
         "id": event.id,
         "source": event.source,
         "type": event.event_type,
-        "summary": truncate_text(event.summary, 220),
-        "raw_request": truncate_text(event.raw_request or "", 260),
-        "decision": truncate_text(event.decision or "", 220),
-        "files": [truncate_text(Path(file).name, 80) for file in event.files[:6]],
+        "summary": truncate_text(event.summary, 140),
+        "raw_request": truncate_text(event.raw_request or "", 160),
+        "decision": truncate_text(event.decision or "", 140),
+        "files": [truncate_text(Path(file).name, 60) for file in event.files[:4]],
         "session_id": str(event.metadata.get("session_id") or ""),
+        "branch": str(event.metadata.get("branch") or event.metadata.get("git_branch") or ""),
     }
 
 

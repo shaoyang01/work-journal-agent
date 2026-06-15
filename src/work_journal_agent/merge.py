@@ -21,6 +21,7 @@ class TaskSummary:
     decisions: list[str] = field(default_factory=list)
     files: set[str] = field(default_factory=set)
     session_ids: set[str] = field(default_factory=set)
+    branches: set[str] = field(default_factory=set)
     event_ids: set[str] = field(default_factory=set)
     events: list[WorkEvent] = field(default_factory=list)
     event_count: int = 0
@@ -44,9 +45,12 @@ class TaskSummary:
         self.events.append(event)
         self.event_ids.add(event.id)
         self.sources.add(event.source)
-        session_id = event.metadata.get("session_id")
+        session_id = event_session_identity(event)
         if session_id:
-            self.session_ids.add(str(session_id))
+            self.session_ids.add(session_id)
+        branch = event_branch(event)
+        if branch:
+            self.branches.add(branch)
         if event.raw_request:
             self.raw_requests.append(event.raw_request)
         if event.event_type in {"user_prompt", "note", "tool_result"}:
@@ -104,7 +108,9 @@ def find_matching_task(tasks: list[TaskSummary], event: WorkEvent, *, min_keywor
     event_repo = repo_identity(event.cwd)
     event_words = keywords(" ".join([event.summary, event.raw_request or "", event.decision or ""]))
     event_files = set(event.files)
-    event_session_id = str(event.metadata.get("session_id") or "")
+    event_session_id = event_session_identity(event)
+    event_branch_name = event_branch(event)
+    session_isolated = requires_session_isolation(event)
     for task in reversed(tasks):
         if task.day != event_day:
             continue
@@ -112,6 +118,10 @@ def find_matching_task(tasks: list[TaskSummary], event: WorkEvent, *, min_keywor
             continue
         if event_session_id and event_session_id in task.session_ids:
             return task
+        if session_isolated:
+            continue
+        if event_branch_name and task.branches and event_branch_name not in task.branches:
+            continue
         if event_files and task.files.intersection(event_files):
             return task
         task_words = keywords(" ".join([task.title, *task.raw_requests, *task.discussions, *task.decisions]))
@@ -119,11 +129,32 @@ def find_matching_task(tasks: list[TaskSummary], event: WorkEvent, *, min_keywor
             return task
         if not event_words and not task_words:
             return task
-    if event.event_type in {"conclusion", "assistant_stop", "session_end"}:
+    if event.event_type in {"conclusion", "assistant_stop", "session_end"} and not session_isolated:
         for task in reversed(tasks):
             if task.day == event_day and repo_identity(task.cwd) == event_repo:
+                if event_branch_name and task.branches and event_branch_name not in task.branches:
+                    continue
                 return task
     return None
+
+
+def requires_session_isolation(event: WorkEvent) -> bool:
+    return bool(event_session_identity(event))
+
+
+def event_session_identity(event: WorkEvent) -> str:
+    session_id = str(event.metadata.get("session_id") or "").strip()
+    if not session_id:
+        return ""
+    return f"{event.source}:{session_id}"
+
+
+def event_branch(event: WorkEvent) -> str:
+    for key in ("branch", "git_branch"):
+        value = event.metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def task_key(event: WorkEvent) -> str:

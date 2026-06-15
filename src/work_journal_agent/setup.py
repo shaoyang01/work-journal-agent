@@ -8,7 +8,7 @@ import getpass
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import default_config_path, default_data_dir, default_opencode_storage_root, expand_path
+from .config import default_config_path, default_data_dir, default_opencode_storage_root, default_zcode_storage_root, expand_path
 from .scheduler import ScheduleResult, install_interval_schedule
 
 
@@ -28,6 +28,11 @@ class SetupResult:
     claude_hooks_enabled: bool
     opencode_plugin_path: Path | None
     opencode_plugin_enabled: bool
+    kun_storage_root: Path | None
+    kun_project_root: Path | None
+    kun_enabled: bool
+    zcode_storage_root: Path | None
+    zcode_enabled: bool
     schedule_result: ScheduleResult | None
 
 
@@ -41,7 +46,7 @@ def run_interactive_setup(
     active_to: str | None = None,
 ) -> SetupResult:
     print("work-journal-agent 配置向导")
-    print("接下来会生成本机配置，并可选配置 Claude Code hooks、OpenCode 插件和后台自动写入器。")
+    print("接下来会生成本机配置，并可选配置 Claude Code hooks、OpenCode、Kun、ZCode 和后台自动写入器。")
     print("")
 
     config_path = ask_path(
@@ -85,6 +90,8 @@ def run_interactive_setup(
         codex_sessions_root = ask_path("Codex sessions 根目录", Path.home() / ".codex" / "sessions", yes=yes)
     enable_claude_hooks = ask_bool("是否启用 Claude Code 采集 hooks", default_claude_enabled(), yes=yes)
     enable_opencode_plugin = ask_bool("是否启用 OpenCode 采集插件", default_opencode_enabled(), yes=yes)
+    enable_kun = ask_bool("是否启用 Kun Agent 采集", default_kun_enabled(), yes=yes)
+    enable_zcode = ask_bool("是否启用 ZCode 采集", default_zcode_enabled(), yes=yes)
     if schedule is None:
         enable_schedule = ask_bool("是否安装后台自动写入器，重启后自动恢复", platform.system() == "Darwin", yes=yes)
     else:
@@ -109,6 +116,14 @@ def run_interactive_setup(
             default_opencode_plugin_path(),
             yes=yes,
         )
+    kun_storage_root: Path | None = None
+    kun_project_root: Path | None = None
+    if enable_kun:
+        kun_storage_root = ask_path("Kun 本地数据目录", default_kun_storage_root(), yes=yes)
+        kun_project_root = ask_path("Kun 项目根目录（用于读取 .kunsdd）", project_root, yes=yes)
+    zcode_storage_root: Path | None = None
+    if enable_zcode:
+        zcode_storage_root = ask_path("ZCode 本地数据目录", default_zcode_storage_root(), yes=yes)
 
     create_config(
         config_path=config_path,
@@ -128,6 +143,11 @@ def run_interactive_setup(
         enable_opencode=enable_opencode_plugin,
         opencode_storage_root=default_opencode_storage_root(),
         opencode_plugin_path=opencode_plugin_path,
+        enable_kun=enable_kun,
+        kun_storage_root=kun_storage_root,
+        kun_project_root=kun_project_root,
+        enable_zcode=enable_zcode,
+        zcode_storage_root=zcode_storage_root,
     )
     if enable_ai and deepseek_api_key:
         create_secrets_file(config_path.parent / "secrets.env", deepseek_api_key)
@@ -172,6 +192,11 @@ def run_interactive_setup(
         claude_hooks_enabled=enable_claude_hooks,
         opencode_plugin_path=opencode_plugin_path,
         opencode_plugin_enabled=enable_opencode_plugin,
+        kun_storage_root=kun_storage_root,
+        kun_project_root=kun_project_root,
+        kun_enabled=enable_kun,
+        zcode_storage_root=zcode_storage_root,
+        zcode_enabled=enable_zcode,
         schedule_result=schedule_result,
     )
     print("")
@@ -185,6 +210,11 @@ def run_interactive_setup(
         print(f"- Claude Code settings：{result.claude_settings_path}")
     if result.opencode_plugin_enabled:
         print(f"- OpenCode 插件：{result.opencode_plugin_path}")
+    if result.kun_enabled:
+        print(f"- Kun 数据目录：{result.kun_storage_root}")
+        print(f"- Kun 项目根目录：{result.kun_project_root}")
+    if result.zcode_enabled:
+        print(f"- ZCode 数据目录：{result.zcode_storage_root}")
     if result.schedule_result:
         print(f"- 后台自动写入器：{result.schedule_result.message}")
     if enable_ai:
@@ -213,11 +243,17 @@ def create_config(
     enable_opencode: bool = True,
     opencode_storage_root: Path | None = None,
     opencode_plugin_path: Path | None = None,
+    enable_kun: bool = False,
+    kun_storage_root: Path | None = None,
+    kun_project_root: Path | None = None,
+    enable_zcode: bool = False,
+    zcode_storage_root: Path | None = None,
     ai_model: str = "deepseek-v4-flash",
-    ai_timeout_seconds: int = 120,
+    ai_timeout_seconds: int = 180,
     ai_cache_enabled: bool = True,
     ai_cache_retention_days: int = 7,
     ai_cluster_review_enabled: bool = True,
+    ai_cluster_review_timeout_seconds: int = 240,
     ai_cluster_review_min_confidence: float = 0.75,
     ai_knowledge_enabled: bool = False,
 ) -> None:
@@ -226,6 +262,9 @@ def create_config(
     claude_settings = claude_settings_path or Path.home() / ".claude" / "settings.json"
     opencode_storage = opencode_storage_root or default_opencode_storage_root()
     opencode_plugin = opencode_plugin_path or default_opencode_plugin_path()
+    kun_storage = kun_storage_root or default_kun_storage_root()
+    kun_project = kun_project_root or Path.cwd()
+    zcode_storage = zcode_storage_root or default_zcode_storage_root()
     content = "\n".join(
         [
             "[storage]",
@@ -257,6 +296,7 @@ def create_config(
             f"cache_enabled = {str(ai_cache_enabled).lower()}",
             f"cache_retention_days = {int(ai_cache_retention_days)}",
             f"cluster_review_enabled = {str(ai_cluster_review_enabled).lower()}",
+            f"cluster_review_timeout_seconds = {int(ai_cluster_review_timeout_seconds)}",
             f"cluster_review_min_confidence = {float(ai_cluster_review_min_confidence)}",
             f"knowledge_enabled = {str(ai_knowledge_enabled).lower()}",
             "",
@@ -272,6 +312,15 @@ def create_config(
             f"enabled = {str(enable_opencode).lower()}",
             f'storage_root = "{toml_string(opencode_storage)}"',
             f'plugin_path = "{toml_string(opencode_plugin)}"',
+            "",
+            "[sources.kun]",
+            f"enabled = {str(enable_kun).lower()}",
+            f'storage_root = "{toml_string(kun_storage)}"',
+            f'project_root = "{toml_string(kun_project)}"',
+            "",
+            "[sources.zcode]",
+            f"enabled = {str(enable_zcode).lower()}",
+            f'storage_root = "{toml_string(zcode_storage)}"',
             "",
         ]
     )
@@ -304,10 +353,11 @@ def upsert_ai_config(text: str, *, enabled: bool) -> str:
             'base_url = "https://api.deepseek.com"',
             'model = "deepseek-v4-flash"',
             'api_key_env = "DEEPSEEK_API_KEY"',
-            "timeout_seconds = 120",
+            "timeout_seconds = 180",
             "cache_enabled = true",
             "cache_retention_days = 7",
             "cluster_review_enabled = true",
+            "cluster_review_timeout_seconds = 240",
             "cluster_review_min_confidence = 0.75",
             "knowledge_enabled = false",
             "",
@@ -375,6 +425,16 @@ def default_opencode_plugin_path() -> Path:
     return config_base / "opencode" / "plugins" / OPENCODE_PLUGIN_NAME
 
 
+def default_kun_storage_root() -> Path:
+    current = Path.home() / ".kun" / "data"
+    if current.exists():
+        return current
+    legacy = Path.home() / ".deepseekgui" / "kun"
+    if legacy.exists():
+        return legacy
+    return current
+
+
 def default_codex_enabled() -> bool:
     return (Path.home() / ".codex" / "sessions").exists()
 
@@ -385,6 +445,14 @@ def default_claude_enabled() -> bool:
 
 def default_opencode_enabled() -> bool:
     return default_opencode_storage_root().exists() or default_opencode_plugin_path().parent.exists()
+
+
+def default_kun_enabled() -> bool:
+    return default_kun_storage_root().exists()
+
+
+def default_zcode_enabled() -> bool:
+    return default_zcode_storage_root().exists()
 
 
 def configure_opencode_plugin(*, plugin_path: Path, config_path: Path, project_root: Path) -> None:

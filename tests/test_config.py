@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,6 +90,7 @@ class ConfigTests(unittest.TestCase):
                         "cache_retention_days = 3",
                         'cache_dir = "cache"',
                         "cluster_review_enabled = false",
+                        "cluster_review_timeout_seconds = 300",
                         "cluster_review_min_confidence = 0.8",
                         "",
                         "[sources.codex]",
@@ -104,6 +106,15 @@ class ConfigTests(unittest.TestCase):
                         'storage_root = "opencode-storage"',
                         'plugin_path = "opencode/plugin.js"',
                         "",
+                        "[sources.kun]",
+                        "enabled = true",
+                        'storage_root = "kun-storage"',
+                        'project_root = "repo-a"',
+                        "",
+                        "[sources.zcode]",
+                        "enabled = true",
+                        'storage_root = "zcode-cli"',
+                        "",
                     ]
                 ),
                 encoding="utf-8",
@@ -115,6 +126,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.ai.cache_retention_days, 3)
             self.assertEqual(config.ai.cache_dir, Path(temp_dir) / "cache")
             self.assertFalse(config.ai.cluster_review_enabled)
+            self.assertEqual(config.ai.cluster_review_timeout_seconds, 300)
             self.assertEqual(config.ai.cluster_review_min_confidence, 0.8)
             self.assertFalse(config.ai.knowledge_enabled)
             self.assertEqual(config.obsidian.knowledge_dir, "Knowledge")
@@ -123,6 +135,81 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.sources.codex.sessions_root, Path(temp_dir) / "codex-sessions")
             self.assertTrue(config.sources.claude.enabled)
             self.assertFalse(config.sources.opencode.enabled)
+            self.assertTrue(config.sources.kun.enabled)
+            self.assertEqual(config.sources.kun.storage_root, Path(temp_dir) / "kun-storage")
+            self.assertEqual(config.sources.kun.project_root, Path(temp_dir) / "repo-a")
+            self.assertTrue(config.sources.zcode.enabled)
+            self.assertEqual(config.sources.zcode.storage_root, Path(temp_dir) / "zcode-cli")
+
+    def test_load_config_defaults_kun_enabled_when_local_kun_data_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            home = base / "home"
+            (home / ".kun" / "data").mkdir(parents=True)
+            config_path = base / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "[sources.codex]",
+                        "enabled = false",
+                        "",
+                        "[sources.claude]",
+                        "enabled = false",
+                        "",
+                        "[sources.opencode]",
+                        "enabled = false",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            try:
+                config = load_config(config_path)
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+
+            self.assertTrue(config.sources.kun.enabled)
+            self.assertEqual(config.sources.kun.storage_root, home / ".kun" / "data")
+
+    def test_load_config_defaults_zcode_enabled_when_local_zcode_cli_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            home = base / "home"
+            (home / ".zcode" / "cli").mkdir(parents=True)
+            config_path = base / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "[sources.codex]",
+                        "enabled = false",
+                        "",
+                        "[sources.claude]",
+                        "enabled = false",
+                        "",
+                        "[sources.opencode]",
+                        "enabled = false",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            try:
+                config = load_config(config_path)
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+
+            self.assertTrue(config.sources.zcode.enabled)
+            self.assertEqual(config.sources.zcode.storage_root, home / ".zcode" / "cli")
 
 
 if __name__ == "__main__":

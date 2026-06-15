@@ -81,6 +81,8 @@ wj setup
 - 是否启用 Codex 采集；启用后会询问 sessions 根目录。
 - 是否启用 Claude Code 采集 hooks；启用后才会询问 settings.json 路径。
 - 是否启用 OpenCode 采集插件；启用后才会询问插件保存路径。
+- 是否启用 Kun Agent 采集；启用后会询问 Kun 本地数据目录和项目根目录。
+- 是否启用 ZCode 采集；启用后会询问 ZCode 本地数据目录。
 
 手动配置方式如下。
 
@@ -149,7 +151,7 @@ wj event add \
 wj sync
 ```
 
-它会先导入 Codex 当天 session 和 OpenCode 当天事件，再生成今天的 Obsidian Daily。Knowledge 不会在 `wj sync` 中生成，避免日报和知识沉淀共用一次长时间等待。
+它会先导入已启用来源的当天事件，包括 Codex session、OpenCode 本地事件、Kun Agent 本地数据和 ZCode 本地会话，再生成今天的 Obsidian Daily。Knowledge 不会在 `wj sync` 中生成，避免日报和知识沉淀共用一次长时间等待。
 
 手动预览：
 
@@ -275,6 +277,59 @@ wj uninstall
 wj uninstall --opencode-plugin /path/to/work-journal-agent.js
 ```
 
+## Kun Agent 采集
+
+Kun Agent 采集默认关闭。开启后，`wj sync` 会读取 Kun 本地 threads 和当前项目的 `.kunsdd` 文档，导入用户需求、结论、工具/文件事件和需求文档摘要。采集器使用稳定 key 去重，重复运行不会重复写入 inbox。
+
+配置文件示例：
+
+```toml
+[sources.kun]
+enabled = true
+storage_root = "~/.kun/data"
+project_root = "/path/to/project"
+```
+
+也可以在顶部菜单栏 App 的设置窗口里开启 Kun，配置 Kun 本地数据目录和 Kun 项目根目录。
+
+手动导入当天 Kun 事件：
+
+```bash
+wj kun import --date 2026-06-11
+```
+
+如果 Kun 安装路径不同，可以显式指定：
+
+```bash
+wj kun import --storage-root /path/to/kun --project-root /path/to/project
+```
+
+## ZCode 采集
+
+ZCode 采集默认会在检测到 `~/.zcode/cli` 时启用。采集器只读本地 sqlite 数据库，导入用户需求、助手结论、工具执行和 session 文件变更摘要；不会读取完整 rollout 请求体，避免把 system prompt、headers 和完整上下文写入 inbox。
+
+配置文件示例：
+
+```toml
+[sources.zcode]
+enabled = true
+storage_root = "~/.zcode/cli"
+```
+
+也可以在顶部菜单栏 App 的设置窗口里开启 ZCode，配置 ZCode 本地数据目录。
+
+手动导入当天 ZCode 事件：
+
+```bash
+wj zcode import --date 2026-06-11
+```
+
+如果 ZCode 安装路径不同，可以显式指定：
+
+```bash
+wj zcode import --storage-root /path/to/.zcode/cli
+```
+
 ## 后台自动写入
 
 macOS 下配置向导会询问是否安装后台自动写入器。开启后会创建：
@@ -321,17 +376,18 @@ provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
-timeout_seconds = 120
+timeout_seconds = 180
 cache_enabled = true
 cache_retention_days = 7
 cluster_review_enabled = true
+cluster_review_timeout_seconds = 240
 cluster_review_min_confidence = 0.75
 knowledge_enabled = false
 ```
 
 DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
 
-启用 `cluster_review_enabled` 后，生成 Daily 前会先让 DeepSeek 审查规则聚类结果。高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，日报仍会正常生成。
+启用 `cluster_review_enabled` 后，今日需求确认和生成 Daily 前都会先让 DeepSeek 审查规则聚类结果。带 `session_id` 的 agent 事件会先按会话拆开，再由 DeepSeek 判断哪些会话属于同一需求；高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，确认页和日报仍会正常生成。`cluster_review_timeout_seconds` 只控制需求聚类复核，普通摘要仍使用 `timeout_seconds`。
 
 DeepSeek 摘要还会识别重要产出：把“修改了哪些文件”提升为“真正完成了什么”，并在 Daily 中展示影响、验证证据和关键产物路径。旧缓存或旧模型只返回 `outputs` 时，会自动按旧字段回退展示。
 

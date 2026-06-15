@@ -47,6 +47,7 @@ class AiConfig:
     cache_retention_days: int
     cache_dir: Path
     cluster_review_enabled: bool
+    cluster_review_timeout_seconds: int
     cluster_review_min_confidence: float
     knowledge_enabled: bool
 
@@ -71,10 +72,25 @@ class OpenCodeSourceConfig:
 
 
 @dataclass(frozen=True)
+class KunSourceConfig:
+    enabled: bool
+    storage_root: Path
+    project_root: Path
+
+
+@dataclass(frozen=True)
+class ZCodeSourceConfig:
+    enabled: bool
+    storage_root: Path
+
+
+@dataclass(frozen=True)
 class SourcesConfig:
     codex: CodexSourceConfig
     claude: ClaudeSourceConfig
     opencode: OpenCodeSourceConfig
+    kun: KunSourceConfig
+    zcode: ZCodeSourceConfig
 
 
 @dataclass(frozen=True)
@@ -145,6 +161,8 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     codex_source = sources.get("codex", {}) if isinstance(sources.get("codex", {}), dict) else {}
     claude_source = sources.get("claude", {}) if isinstance(sources.get("claude", {}), dict) else {}
     opencode_source = sources.get("opencode", {}) if isinstance(sources.get("opencode", {}), dict) else {}
+    kun_source = sources.get("kun", {}) if isinstance(sources.get("kun", {}), dict) else {}
+    zcode_source = sources.get("zcode", {}) if isinstance(sources.get("zcode", {}), dict) else {}
 
     data_dir = default_data_dir()
     inbox_path = expand_path(storage.get("inbox_path", data_dir / "inbox" / "events.jsonl"), base_dir=config_base)
@@ -179,11 +197,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
             base_url=str(ai.get("base_url", "https://api.deepseek.com")),
             model=str(ai.get("model", "deepseek-v4-flash")),
             api_key_env=str(ai.get("api_key_env", "DEEPSEEK_API_KEY")),
-            timeout_seconds=int(ai.get("timeout_seconds", 120)),
+            timeout_seconds=int(ai.get("timeout_seconds", 180)),
             cache_enabled=bool(ai.get("cache_enabled", True)),
             cache_retention_days=max(1, int(ai.get("cache_retention_days", 7))),
             cache_dir=expand_path(ai.get("cache_dir", data_dir / "ai-cache"), base_dir=config_base),
             cluster_review_enabled=bool(ai.get("cluster_review_enabled", True)),
+            cluster_review_timeout_seconds=int(ai.get("cluster_review_timeout_seconds", ai.get("timeout_seconds", 180))),
             cluster_review_min_confidence=min(1.0, max(0.0, float(ai.get("cluster_review_min_confidence", 0.75)))),
             knowledge_enabled=bool(ai.get("knowledge_enabled", False)),
         ),
@@ -201,6 +220,15 @@ def load_config(config_path: Path | None = None) -> AppConfig:
                 storage_root=expand_path(opencode_source.get("storage_root", default_opencode_storage_root()), base_dir=config_base),
                 plugin_path=expand_path(opencode_source.get("plugin_path", default_opencode_plugin_path()), base_dir=config_base),
             ),
+            kun=KunSourceConfig(
+                enabled=bool(kun_source.get("enabled", default_kun_storage_root().exists())),
+                storage_root=expand_path(kun_source.get("storage_root", default_kun_storage_root()), base_dir=config_base),
+                project_root=expand_path(kun_source.get("project_root", Path.cwd()), base_dir=config_base),
+            ),
+            zcode=ZCodeSourceConfig(
+                enabled=bool(zcode_source.get("enabled", default_zcode_storage_root().exists())),
+                storage_root=expand_path(zcode_source.get("storage_root", default_zcode_storage_root()), base_dir=config_base),
+            ),
         ),
     )
 
@@ -216,3 +244,17 @@ def default_opencode_plugin_path() -> Path:
     else:
         config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return config_base / "opencode" / "plugins" / "work-journal-agent.js"
+
+
+def default_kun_storage_root() -> Path:
+    current = Path.home() / ".kun" / "data"
+    if current.exists():
+        return current
+    legacy = Path.home() / ".deepseekgui" / "kun"
+    if legacy.exists():
+        return legacy
+    return current
+
+
+def default_zcode_storage_root() -> Path:
+    return Path.home() / ".zcode" / "cli"

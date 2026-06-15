@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .ai import review_task_clusters
 from .config import AppConfig, default_data_dir
 from .events import WorkEvent, read_events
 from .merge import TaskSummary, group_events, repo_identity
@@ -42,6 +43,8 @@ def status_path() -> Path:
 def build_review_payload(config: AppConfig, day: date) -> dict[str, Any]:
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == day]
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
+    cluster_result = review_task_clusters(config, tasks)
+    tasks = cluster_result.tasks
     existing_daily = load_daily_review(day)
     candidates = [candidate_from_task(task, existing_daily=existing_daily) for task in tasks if task.event_count > 0]
     ignored_event_ids = set(existing_daily.get("ignored_event_ids") or [])
@@ -55,6 +58,7 @@ def build_review_payload(config: AppConfig, day: date) -> dict[str, Any]:
             "total_candidates": len(candidates),
             "pending_candidates": len(pending),
             "event_count": sum(task.event_count for task in tasks),
+            "cluster_review": cluster_result.message,
         },
     }
     write_status(day=day, pending_count=len(pending), daily_path=daily_note_path(config, day))

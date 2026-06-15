@@ -9,12 +9,14 @@ from work_journal_agent.config import (
     AppConfig,
     ClaudeSourceConfig,
     CodexSourceConfig,
+    KunSourceConfig,
     MergeConfig,
     ObsidianConfig,
     OpenCodeSourceConfig,
     PrivacyConfig,
     SourcesConfig,
     StorageConfig,
+    ZCodeSourceConfig,
 )
 from work_journal_agent.events import WorkEvent, append_event
 from work_journal_agent.merge import group_events
@@ -100,6 +102,7 @@ def test_config(base: Path) -> AppConfig:
             cache_retention_days=7,
             cache_dir=base / "ai-cache",
             cluster_review_enabled=True,
+            cluster_review_timeout_seconds=240,
             cluster_review_min_confidence=0.75,
             knowledge_enabled=False,
         ),
@@ -107,6 +110,8 @@ def test_config(base: Path) -> AppConfig:
             codex=CodexSourceConfig(enabled=False, sessions_root=base / "codex"),
             claude=ClaudeSourceConfig(enabled=False, settings_path=base / "claude.json"),
             opencode=OpenCodeSourceConfig(enabled=False, storage_root=base / "opencode", plugin_path=base / "plugin.js"),
+            kun=KunSourceConfig(enabled=False, storage_root=base / "kun", project_root=base),
+            zcode=ZCodeSourceConfig(enabled=False, storage_root=base / "zcode"),
         ),
     )
 

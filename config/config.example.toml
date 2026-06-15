@@ -27,21 +27,25 @@ max_raw_request_chars = 500
 store_transcript_paths = true
 
 [merge]
-# Events from the same date and same repo/cwd are grouped by default.
+# Local pre-grouping threshold. Events with explicit session_id stay isolated first;
+# DeepSeek cluster review can merge related sessions when enabled.
 min_keyword_overlap = 1
 
 [ai]
-# Optional. When enabled, wj sync asks DeepSeek to produce concise task summaries.
+# Optional. When enabled, Work Journal asks DeepSeek to review requirement clusters
+# and produce concise task summaries from compressed events.
 enabled = false
 provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 api_key_env = "DEEPSEEK_API_KEY"
-timeout_seconds = 120
+timeout_seconds = 180
 cache_enabled = true
 cache_retention_days = 7
 # cache_dir = "~/.local/share/work-journal-agent/ai-cache"
+# Review candidate requirement groups before confirmation and Daily generation.
 cluster_review_enabled = true
+cluster_review_timeout_seconds = 240
 cluster_review_min_confidence = 0.75
 knowledge_enabled = false
 
@@ -57,3 +61,12 @@ settings_path = "~/.claude/settings.json"
 enabled = false
 storage_root = "~/.local/share/opencode/storage"
 plugin_path = "~/.config/opencode/plugins/work-journal-agent.js"
+
+[sources.kun]
+enabled = false
+storage_root = "~/.kun/data"
+project_root = "/path/to/project"
+
+[sources.zcode]
+enabled = false
+storage_root = "~/.zcode/cli"

@@ -18,7 +18,9 @@ from .scheduler import install_daily_schedule, install_interval_schedule, schedu
 from .setup import configure_ai_for_config, run_interactive_setup
 from .ai import generate_knowledge_topics, review_task_clusters, summarize_tasks
 from .sources.codex import collect_new_codex_events, import_codex_events
+from .sources.kun import collect_new_kun_events, import_kun_events
 from .sources.opencode import event_from_hook_payload, import_opencode_events, collect_new_opencode_events
+from .sources.zcode import collect_new_zcode_events, import_zcode_events
 from .uninstall import run_uninstall
 from .writers.obsidian import render_daily, write_daily, write_knowledge_topic_notes
 
@@ -113,6 +115,21 @@ def build_parser() -> argparse.ArgumentParser:
     opencode_hook_parser = opencode_subparsers.add_parser("hook", help="Read an OpenCode plugin event JSON from stdin")
     opencode_hook_parser.add_argument("--event-type", default=None, help="Override normalized work event type")
     opencode_hook_parser.set_defaults(func=cmd_opencode_hook)
+
+    kun_parser = subparsers.add_parser("kun", help="Kun source commands")
+    kun_subparsers = kun_parser.add_subparsers(dest="kun_command", required=True)
+    kun_import_parser = kun_subparsers.add_parser("import", help="Import Kun threads and .kunsdd documents for a day")
+    kun_import_parser.add_argument("--date", type=parse_date, default=date.today())
+    kun_import_parser.add_argument("--storage-root", type=Path)
+    kun_import_parser.add_argument("--project-root", type=Path)
+    kun_import_parser.set_defaults(func=cmd_kun_import)
+
+    zcode_parser = subparsers.add_parser("zcode", help="ZCode source commands")
+    zcode_subparsers = zcode_parser.add_subparsers(dest="zcode_command", required=True)
+    zcode_import_parser = zcode_subparsers.add_parser("import", help="Import ZCode local sqlite events for a day")
+    zcode_import_parser.add_argument("--date", type=parse_date, default=date.today())
+    zcode_import_parser.add_argument("--storage-root", type=Path)
+    zcode_import_parser.set_defaults(func=cmd_zcode_import)
 
     ai_parser = subparsers.add_parser("ai", help="Manage AI summarization")
     ai_subparsers = ai_parser.add_subparsers(dest="ai_command", required=True)
@@ -256,10 +273,42 @@ def cmd_sync(args: argparse.Namespace) -> None:
             opencode_result = collect_new_opencode_events(config, day=args.date, storage_root=opencode_root)
         else:
             opencode_result = import_opencode_events(config, day=args.date, storage_root=opencode_root)
+    kun_result = empty_import_result("kun")
+    if config.sources.kun.enabled:
+        if args.dry_run:
+            kun_result = collect_new_kun_events(
+                config,
+                day=args.date,
+                storage_root=config.sources.kun.storage_root,
+                project_root=config.sources.kun.project_root,
+            )
+        else:
+            kun_result = import_kun_events(
+                config,
+                day=args.date,
+                storage_root=config.sources.kun.storage_root,
+                project_root=config.sources.kun.project_root,
+            )
+    zcode_result = empty_import_result("zcode")
+    if config.sources.zcode.enabled:
+        if args.dry_run:
+            zcode_result = collect_new_zcode_events(
+                config,
+                day=args.date,
+                storage_root=config.sources.zcode.storage_root,
+            )
+        else:
+            zcode_result = import_zcode_events(
+                config,
+                day=args.date,
+                storage_root=config.sources.zcode.storage_root,
+            )
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
     if args.dry_run:
         events.extend(codex_result.events)
         events.extend(opencode_result.events)
+        events.extend(kun_result.events)
+        events.extend(zcode_result.events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
@@ -268,6 +317,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
         print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
+        print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
+        print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
         if should_print_cluster_message(cluster_result.message):
             print(cluster_result.message)
         if ai_result.enabled:
@@ -277,6 +328,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
     target = write_daily(config, args.date, tasks, write_knowledge=False)
     print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
     print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
+    print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
+    print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
     if should_print_cluster_message(cluster_result.message):
         print(cluster_result.message)
     if ai_result.enabled:
@@ -335,6 +388,27 @@ def cmd_opencode_hook(args: argparse.Namespace) -> None:
     event = event_from_hook_payload(payload, config=config, event_type_override=args.event_type)
     append_event(config.storage.inbox_path, event)
     print(event.to_json_line())
+
+
+def cmd_kun_import(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    result = import_kun_events(
+        config,
+        day=args.date,
+        storage_root=args.storage_root or config.sources.kun.storage_root,
+        project_root=args.project_root or config.sources.kun.project_root,
+    )
+    print(f"Imported Kun events: {result.imported_events} from {result.scanned_files} files")
+
+
+def cmd_zcode_import(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    result = import_zcode_events(
+        config,
+        day=args.date,
+        storage_root=args.storage_root or config.sources.zcode.storage_root,
+    )
+    print(f"Imported ZCode events: {result.imported_events} from {result.scanned_files} files")
 
 
 def cmd_ai_setup(args: argparse.Namespace) -> None:
