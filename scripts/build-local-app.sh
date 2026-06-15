@@ -3,6 +3,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="${1:-${ROOT_DIR}/dist/Work Journal Agent.app}"
+VERSION="$(python3 - <<'PY' "${ROOT_DIR}/pyproject.toml"
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+print(match.group(1) if match else "0.0.0")
+PY
+)"
 SOURCE_PATH="${ROOT_DIR}/macos/WorkJournalMenuBar/main.swift"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -24,7 +34,7 @@ fi
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 
-cat > "${PLIST_PATH}" <<'PLIST'
+cat > "${PLIST_PATH}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -41,9 +51,9 @@ cat > "${PLIST_PATH}" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.7.0-local</string>
+  <string>${VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>0.7.0-local</string>
+  <string>${VERSION}</string>
   <key>LSUIElement</key>
   <true/>
 </dict>

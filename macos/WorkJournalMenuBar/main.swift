@@ -16,6 +16,11 @@ private enum AppPaths {
            let text = try? String(contentsOf: url, encoding: .utf8) {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
+                if trimmed.hasPrefix("@BUNDLE_RESOURCES@/"),
+                   let resourceURL = Bundle.main.resourceURL {
+                    let relative = String(trimmed.dropFirst("@BUNDLE_RESOURCES@/".count))
+                    return resourceURL.appendingPathComponent(relative).path
+                }
                 return trimmed
             }
         }

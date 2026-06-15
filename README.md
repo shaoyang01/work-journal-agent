@@ -12,6 +12,16 @@
 
 ## 安装
 
+内部试用 macOS 版可以直接下载 Release 里的 DMG：
+
+1. 打开 [GitHub Releases](https://github.com/shaoyang01/work-journal-agent/releases)。
+2. 下载 `Work-Journal-Agent-版本号.dmg`。
+3. 打开 DMG，把 `Work Journal Agent.app` 拖到 Applications。
+4. 首次打开如果提示无法验证开发者，请在 系统设置 -> 隐私与安全性 中允许打开。
+5. 点击顶部菜单栏 `WJ` 图标，进入设置窗口配置 Obsidian、Agent 数据源和 DeepSeek。
+
+这个 DMG 是未公证的内部试用包，适合同事先体验；正式分发前还需要 Apple Developer 签名和 notarization。
+
 macOS 最简单方式：在 Finder 里双击：
 
 ```text
@@ -202,6 +212,20 @@ dist/Work Journal Agent.app
 ```
 
 这个本机测试版会绑定当前仓库路径，并调用当前仓库下的 Python CLI。移动仓库后需要重新构建。
+
+构建可分享的内部试用 DMG：
+
+```bash
+scripts/build-dmg.sh
+```
+
+产物会写到：
+
+```text
+dist/Work-Journal-Agent-版本号.dmg
+```
+
+DMG 内的 App 会内置当前版本源码，不要求试用者先 clone 仓库；但仍依赖试用者本机有 `python3`。
 
 菜单栏 App 不启动本地 HTTP 服务，也不打开浏览器。它通过 CLI JSON 通道调用本地核心逻辑：
 
