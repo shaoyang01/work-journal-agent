@@ -3,16 +3,21 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="${1:-${ROOT_DIR}/dist/Work Journal Agent.app}"
+SOURCE_PATH="${ROOT_DIR}/macos/WorkJournalMenuBar/main.swift"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 PLIST_PATH="${CONTENTS_DIR}/Info.plist"
 SWIFT_PATH="${MACOS_DIR}/main.swift"
 BIN_PATH="${MACOS_DIR}/WorkJournalMenuBar"
-TEMPLATE_PATH="${ROOT_DIR}/scripts/menubar/WorkJournalMenuBar.swift.in"
 
 if ! command -v swiftc >/dev/null 2>&1; then
   echo "swiftc not found. Please install Xcode Command Line Tools first." >&2
+  exit 1
+fi
+
+if [[ ! -f "${SOURCE_PATH}" ]]; then
+  echo "Missing menu bar source: ${SOURCE_PATH}" >&2
   exit 1
 fi
 
@@ -36,27 +41,24 @@ cat > "${PLIST_PATH}" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.6.0-local</string>
+  <string>0.7.0-local</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>0.7.0-local</string>
   <key>LSUIElement</key>
   <true/>
 </dict>
 </plist>
 PLIST
 
-ROOT_DIR="${ROOT_DIR}" TEMPLATE_PATH="${TEMPLATE_PATH}" python3 - <<'PY' > "${SWIFT_PATH}"
-import json
-import os
-from pathlib import Path
+cp "${SOURCE_PATH}" "${SWIFT_PATH}"
+printf "%s\n" "${ROOT_DIR}" >"${RESOURCES_DIR}/project-root.txt"
 
-root = os.environ["ROOT_DIR"]
-template = Path(os.environ["TEMPLATE_PATH"]).read_text(encoding="utf-8")
-print(template.replace("__PROJECT_ROOT__", json.dumps(root)))
-PY
-
-swiftc "${SWIFT_PATH}" -o "${BIN_PATH}" -framework AppKit
+swiftc -module-cache-path "${TMPDIR:-/tmp}/work-journal-agent-swift-module-cache" "${SWIFT_PATH}" -o "${BIN_PATH}" -framework AppKit -framework SwiftUI
 chmod +x "${BIN_PATH}"
+
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "${APP_DIR}" >/dev/null
+fi
 
 cat > "${RESOURCES_DIR}/README-local-build.txt" <<EOF
 Work Journal Agent local test build
