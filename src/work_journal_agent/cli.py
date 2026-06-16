@@ -12,7 +12,7 @@ from .config import load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
 from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
-from .requirements import apply_requirement_assignments, build_review_payload, save_review_decisions
+from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, merge_confirmed_requirement_tasks, save_review_decisions
 from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
@@ -213,11 +213,13 @@ def cmd_note(args: argparse.Namespace) -> None:
 def cmd_generate_daily(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
+    events = filter_ignored_events(args.date, events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
     apply_requirement_assignments(config, args.date, tasks)
+    tasks = merge_confirmed_requirement_tasks(tasks)
     if args.dry_run:
         if should_print_cluster_message(cluster_result.message):
             print(cluster_result.message)
@@ -238,6 +240,7 @@ def cmd_generate_knowledge(args: argparse.Namespace) -> None:
         print("Knowledge notes disabled")
         return
     events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
+    events = filter_ignored_events(args.date, events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     ai_result = summarize_tasks(config, tasks)
     knowledge_result = generate_knowledge_topics(config, tasks)
@@ -309,11 +312,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
         events.extend(opencode_result.events)
         events.extend(kun_result.events)
         events.extend(zcode_result.events)
+    events = filter_ignored_events(args.date, events)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
     apply_requirement_assignments(config, args.date, tasks)
+    tasks = merge_confirmed_requirement_tasks(tasks)
     if args.dry_run:
         print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
         print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")

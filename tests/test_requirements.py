@@ -20,7 +20,7 @@ from work_journal_agent.config import (
 )
 from work_journal_agent.events import WorkEvent, append_event
 from work_journal_agent.merge import group_events
-from work_journal_agent.requirements import apply_requirement_assignments, build_review_payload, save_review_decisions
+from work_journal_agent.requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, merge_confirmed_requirement_tasks, save_review_decisions
 
 
 class RequirementReviewTests(unittest.TestCase):
@@ -84,6 +84,94 @@ class RequirementReviewTests(unittest.TestCase):
             finally:
                 restore_env("XDG_DATA_HOME", old_data_home)
 
+    def test_filter_ignored_events_removes_confirmed_ignored_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            old_data_home = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(base / "data")
+            try:
+                config = test_config(base)
+                kept = event("e1", "实现真实需求", raw_request="实现真实需求", cwd="/repo/service")
+                ignored = event("e2", "你好", raw_request="你好", cwd="/repo/service")
+
+                save_review_decisions(
+                    date(2026, 6, 12),
+                    [
+                        {
+                            "candidate_id": "cand_ignored",
+                            "title": "你好",
+                            "project": "service",
+                            "requirement_type": "direct",
+                            "status": "ignored",
+                            "event_ids": [ignored.id],
+                        }
+                    ],
+                    config=config,
+                )
+
+                filtered = filter_ignored_events(date(2026, 6, 12), [kept, ignored])
+
+                self.assertEqual([item.id for item in filtered], [kept.id])
+            finally:
+                restore_env("XDG_DATA_HOME", old_data_home)
+
+    def test_merge_confirmed_requirement_tasks_groups_same_title_across_agents(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            old_data_home = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(base / "data")
+            try:
+                config = test_config(base)
+                codex_event = event(
+                    "e1",
+                    "Codex 用户需求：实现模拟打标优化",
+                    raw_request="实现模拟打标优化",
+                    cwd="/repo/logistics-center",
+                    source="codex",
+                    metadata={"session_id": "codex-1"},
+                )
+                zcode_event = event(
+                    "e2",
+                    "ZCode 用户需求：补充模拟打标优化",
+                    raw_request="补充模拟打标优化",
+                    cwd="/repo/logistics-center",
+                    source="zcode",
+                    metadata={"session_id": "zcode-1"},
+                )
+                tasks = group_events([codex_event, zcode_event], min_keyword_overlap=1)
+                save_review_decisions(
+                    date(2026, 6, 12),
+                    [
+                        {
+                            "candidate_id": "cand_codex",
+                            "title": "生产计划模拟打标优化",
+                            "project": "logistics-center",
+                            "requirement_type": "direct",
+                            "status": "confirmed",
+                            "event_ids": [codex_event.id],
+                        },
+                        {
+                            "candidate_id": "cand_zcode",
+                            "title": "生产计划模拟打标优化",
+                            "project": "logistics-center",
+                            "requirement_type": "direct",
+                            "status": "confirmed",
+                            "event_ids": [zcode_event.id],
+                        },
+                    ],
+                    config=config,
+                )
+
+                apply_requirement_assignments(config, date(2026, 6, 12), tasks)
+                merged = merge_confirmed_requirement_tasks(tasks)
+
+                self.assertEqual(len(merged), 1)
+                self.assertEqual(merged[0].ai_title, "生产计划模拟打标优化")
+                self.assertEqual(merged[0].sources, {"codex", "zcode"})
+                self.assertEqual(merged[0].event_count, 2)
+            finally:
+                restore_env("XDG_DATA_HOME", old_data_home)
+
 
 def test_config(base: Path) -> AppConfig:
     return AppConfig(
@@ -116,10 +204,18 @@ def test_config(base: Path) -> AppConfig:
     )
 
 
-def event(event_id: str, summary: str, *, raw_request: str | None = None, cwd: str) -> WorkEvent:
+def event(
+    event_id: str,
+    summary: str,
+    *,
+    raw_request: str | None = None,
+    cwd: str,
+    source: str = "codex",
+    metadata: dict[str, str] | None = None,
+) -> WorkEvent:
     return WorkEvent(
         id=event_id,
-        source="codex",
+        source=source,
         event_type="user_prompt",
         occurred_at=datetime.fromisoformat("2026-06-12T09:00:00+08:00"),
         cwd=cwd,
@@ -127,7 +223,7 @@ def event(event_id: str, summary: str, *, raw_request: str | None = None, cwd: s
         raw_request=raw_request,
         decision=None,
         files=(),
-        metadata={},
+        metadata=metadata or {},
     )
 
 

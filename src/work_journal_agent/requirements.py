@@ -10,7 +10,7 @@ from typing import Any
 from .ai import review_task_clusters
 from .config import AppConfig, default_data_dir
 from .events import WorkEvent, read_events
-from .merge import TaskSummary, group_events, repo_identity
+from .merge import TaskSummary, group_events, repo_identity, task_from_events
 from .writers.obsidian import compact_items, display_title, relative_files
 
 
@@ -63,6 +63,18 @@ def build_review_payload(config: AppConfig, day: date) -> dict[str, Any]:
     }
     write_status(day=day, pending_count=len(pending), daily_path=daily_note_path(config, day))
     return payload
+
+
+def filter_ignored_events(day: date, events: list[WorkEvent]) -> list[WorkEvent]:
+    ignored_event_ids = ignored_event_ids_for_day(day)
+    if not ignored_event_ids:
+        return events
+    return [event for event in events if event.id not in ignored_event_ids]
+
+
+def ignored_event_ids_for_day(day: date) -> set[str]:
+    daily_payload = load_daily_review(day)
+    return {str(value) for value in daily_payload.get("ignored_event_ids") or [] if value}
 
 
 def candidate_from_task(task: TaskSummary, *, existing_daily: dict[str, Any]) -> dict[str, Any]:
@@ -324,6 +336,97 @@ def apply_requirement_assignments(config: AppConfig, day: date, tasks: list[Task
         title = str((thread or {}).get("title") or matched.get("title") or "").strip()
         if title:
             task.ai_title = title
+        requirement_id = str(matched.get("requirement_id") or "").strip()
+        if requirement_id:
+            task.requirement_id = requirement_id
+
+
+def merge_confirmed_requirement_tasks(tasks: list[TaskSummary]) -> list[TaskSummary]:
+    grouped: dict[str, list[TaskSummary]] = {}
+    result: list[TaskSummary] = []
+    for task in tasks:
+        key = confirmed_requirement_group_key(task)
+        if key:
+            grouped.setdefault(key, []).append(task)
+        else:
+            result.append(task)
+
+    merged_tasks: list[TaskSummary] = []
+    for group_key, requirement_tasks in grouped.items():
+        if len(requirement_tasks) == 1:
+            merged_tasks.append(requirement_tasks[0])
+            continue
+        events = [event for task in requirement_tasks for event in task.events]
+        title = first_confirmed_title(requirement_tasks)
+        merged = task_from_events(events, key=group_key, title=title)
+        merged.requirement_id = first_text(task.requirement_id for task in requirement_tasks)
+        merge_task_ai_fields(merged, requirement_tasks)
+        merged_tasks.append(merged)
+
+    all_tasks = result + merged_tasks
+    all_tasks.sort(key=lambda task: min((event.occurred_at for event in task.events), default=datetime.max.replace(tzinfo=timezone.utc)))
+    return all_tasks
+
+
+def confirmed_requirement_group_key(task: TaskSummary) -> str:
+    title = str(task.ai_title or "").strip()
+    if title:
+        return f"title:{title}"
+    if task.requirement_id:
+        return f"id:{task.requirement_id}"
+    return ""
+
+
+def first_confirmed_title(tasks: list[TaskSummary]) -> str:
+    for task in tasks:
+        if task.ai_title:
+            return task.ai_title
+    return tasks[0].title if tasks else "未命名任务"
+
+
+def merge_task_ai_fields(target: TaskSummary, tasks: list[TaskSummary]) -> None:
+    target.ai_title = first_confirmed_title(tasks)
+    target.ai_request = first_text(task.ai_request for task in tasks)
+    target.ai_decision = first_text_reversed(task.ai_decision for task in tasks)
+    target.ai_outputs = merge_text_lists(task.ai_outputs for task in tasks)
+    target.ai_deliverables = merge_text_lists(task.ai_deliverables for task in tasks)
+    target.ai_impact = first_text_reversed(task.ai_impact for task in tasks)
+    target.ai_evidence = merge_text_lists(task.ai_evidence for task in tasks)
+    target.ai_artifact_paths = merge_text_lists(task.ai_artifact_paths for task in tasks)
+    target.ai_next = first_text_reversed(task.ai_next for task in tasks)
+    target.ai_next_actions = merge_text_lists(task.ai_next_actions for task in tasks)
+    target.ai_blockers = merge_text_lists(task.ai_blockers for task in tasks)
+    target.ai_questions = merge_text_lists(task.ai_questions for task in tasks)
+    target.ai_validation_gaps = merge_text_lists(task.ai_validation_gaps for task in tasks)
+    target.ai_owner_hint = first_text_reversed(task.ai_owner_hint for task in tasks)
+
+
+def merge_text_lists(groups: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
+    return result
+
+
+def first_text(values: Any) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def first_text_reversed(values: Any) -> str | None:
+    collected = [str(value or "").strip() for value in values]
+    for text in reversed(collected):
+        if text:
+            return text
+    return None
 
 
 def write_status(*, day: date, pending_count: int, daily_path: Path) -> None:

@@ -39,6 +39,7 @@ class TaskSummary:
     ai_questions: list[str] = field(default_factory=list)
     ai_validation_gaps: list[str] = field(default_factory=list)
     ai_owner_hint: str | None = None
+    requirement_id: str | None = None
 
     def add(self, event: WorkEvent) -> None:
         self.event_count += 1
