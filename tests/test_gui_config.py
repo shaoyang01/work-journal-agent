@@ -21,7 +21,7 @@ class GuiConfigTests(unittest.TestCase):
                 payload = {
                     "config_path": str(config_path),
                     "storage": {
-                        "inbox_path": str(base / "events.jsonl"),
+                        "database_path": str(base / "work-journal.db"),
                         "output_dir": str(base / "out"),
                     },
                     "obsidian": {
@@ -74,6 +74,8 @@ class GuiConfigTests(unittest.TestCase):
                 config = load_config(config_path)
 
                 self.assertEqual(saved["ai"]["model"], "deepseek-v4-pro")
+                self.assertEqual(saved["storage"]["database_path"], str(base / "work-journal.db"))
+                self.assertEqual(config.storage.database_path, base / "work-journal.db")
                 self.assertEqual(config.ai.model, "deepseek-v4-pro")
                 self.assertEqual(config.ai.timeout_seconds, 120)
                 self.assertEqual(config.ai.cluster_review_timeout_seconds, 300)

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .merge import TaskSummary, repo_identity
+from .sqlite_store import SUMMARY_NAMESPACE, is_sqlite_storage, store_for
 
 
 CACHE_VERSION = 1
@@ -36,7 +37,12 @@ def cache_path(cache_dir: Path, day: date) -> Path:
     return cache_dir / f"{day.isoformat()}.json"
 
 
-def load_cache(cache_dir: Path, day: date) -> dict[str, Any]:
+def load_cache(cache_dir: Path | Any, day: date) -> dict[str, Any]:
+    if is_sqlite_storage(cache_dir):
+        store = store_for(cache_dir)
+        with store.connect() as conn:
+            value = store.load_ai_cache(conn, SUMMARY_NAMESPACE, day)
+        return value or {"cache_version": CACHE_VERSION, "date": day.isoformat(), "tasks": []}
     path = cache_path(cache_dir, day)
     if not path.exists():
         return {"cache_version": CACHE_VERSION, "date": day.isoformat(), "tasks": []}
@@ -52,7 +58,18 @@ def load_cache(cache_dir: Path, day: date) -> dict[str, Any]:
     return value
 
 
-def save_cache(cache_dir: Path, day: date, entries: list[dict[str, Any]]) -> None:
+def save_cache(cache_dir: Path | Any, day: date, entries: list[dict[str, Any]]) -> None:
+    if is_sqlite_storage(cache_dir):
+        payload = {
+            "cache_version": CACHE_VERSION,
+            "date": day.isoformat(),
+            "updated_at": datetime.now().astimezone().isoformat(),
+            "tasks": entries,
+        }
+        store = store_for(cache_dir)
+        with store.connect() as conn:
+            store.save_ai_cache(conn, SUMMARY_NAMESPACE, day, payload)
+        return
     cache_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "cache_version": CACHE_VERSION,
@@ -63,7 +80,13 @@ def save_cache(cache_dir: Path, day: date, entries: list[dict[str, Any]]) -> Non
     cache_path(cache_dir, day).write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def prune_cache(cache_dir: Path, *, keep_days: int, today: date) -> None:
+def prune_cache(cache_dir: Path | Any, *, keep_days: int, today: date, namespace: str = SUMMARY_NAMESPACE) -> None:
+    if is_sqlite_storage(cache_dir):
+        cutoff = today - timedelta(days=max(1, keep_days) - 1)
+        store = store_for(cache_dir)
+        with store.connect() as conn:
+            store.prune_ai_cache(conn, namespace, cutoff=cutoff)
+        return
     if not cache_dir.exists():
         return
     cutoff = today - timedelta(days=max(1, keep_days) - 1)

@@ -4,8 +4,8 @@
 # - or pass --config /path/to/config.toml
 
 [storage]
-# JSONL inbox used by all event sources.
-inbox_path = "~/.local/share/work-journal-agent/inbox/events.jsonl"
+# SQLite database used by all event sources, requirement review, and AI caches.
+database_path = "~/.local/share/work-journal-agent/work-journal.db"
 
 # Fallback output directory when obsidian.vault_path is empty.
 output_dir = "~/.local/share/work-journal-agent/out"

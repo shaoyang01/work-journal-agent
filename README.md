@@ -80,7 +80,7 @@ wj setup
 配置向导会询问：
 
 - 配置文件路径。
-- inbox JSONL 路径。
+- SQLite 数据库文件路径。
 - Obsidian vault 路径。
 - Daily / Tasks 目录名。
 - 是否写独立任务笔记。
@@ -113,7 +113,7 @@ Windows 可以放到：
 
 ```toml
 [storage]
-inbox_path = "~/.local/share/work-journal-agent/inbox/events.jsonl"
+database_path = "~/.local/share/work-journal-agent/work-journal.db"
 output_dir = "./out"
 
 [obsidian]
@@ -124,6 +124,35 @@ write_task_notes = false
 ```
 
 `vault_path` 留空时，会写到 `storage.output_dir`，方便先试跑。
+
+## 旧数据迁移
+
+升级到 SQLite 存储后，Work Journal 自身的新数据会写入 `storage.database_path`。如果本机已有旧版 JSON/JSONL 数据，可以执行一次迁移：
+
+```bash
+wj migrate-storage
+```
+
+默认会从旧版本机目录读取：
+
+```text
+~/.local/share/work-journal-agent/inbox/events.jsonl
+~/.local/share/work-journal-agent/requirements/
+~/.local/share/work-journal-agent/state/status.json
+~/.local/share/work-journal-agent/ai-cache/
+```
+
+如果旧数据在自定义位置，可以显式指定：
+
+```bash
+wj migrate-storage \
+  --legacy-inbox /path/to/events.jsonl \
+  --legacy-requirements-dir /path/to/requirements \
+  --legacy-state-dir /path/to/state \
+  --legacy-ai-cache-dir /path/to/ai-cache
+```
+
+迁移命令是幂等的，重复执行不会重复写入事件；已确认需求和缓存会按同一主键覆盖到 SQLite。
 
 ## 手动记录事件
 
@@ -139,7 +168,7 @@ wj note "今天完成了 work-journal-agent 的自动采集和后台写入"
 wj event add \
   --source codex \
   --type conclusion \
-  --summary "确定采用 Claude hooks + JSONL inbox 方案" \
+  --summary "确定采用 SQLite 本地存储方案" \
   --decision "第一版先做本地 CLI，不做后台服务"
 ```
 
@@ -237,12 +266,10 @@ wj app config-save
 wj app status
 ```
 
-确认窗口会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机：
+确认窗口会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机 SQLite 数据库：
 
 ```text
-~/.local/share/work-journal-agent/requirements/threads.json
-~/.local/share/work-journal-agent/requirements/daily/YYYY-MM-DD.json
-~/.local/share/work-journal-agent/state/status.json
+~/.local/share/work-journal-agent/work-journal.db
 ```
 
 后续 `wj generate-daily` 会优先使用已确认的需求标题。
@@ -409,7 +436,7 @@ cluster_review_min_confidence = 0.75
 knowledge_enabled = false
 ```
 
-DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在 `~/.local/share/work-journal-agent/ai-cache/YYYY-MM-DD.json`，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
+DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在本机 SQLite 数据库中，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
 
 启用 `cluster_review_enabled` 后，今日需求确认和生成 Daily 前都会先让 DeepSeek 审查规则聚类结果。带 `session_id` 的 agent 事件会先按会话拆开，再由 DeepSeek 判断哪些会话属于同一需求；高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，确认页和日报仍会正常生成。`cluster_review_timeout_seconds` 只控制需求聚类复核，普通摘要仍使用 `timeout_seconds`。
 
@@ -576,7 +603,7 @@ Windows PowerShell：
 - 项目代码用 Git 同步。
 - 每台设备维护自己的 `~/.config/work-journal-agent/config.toml`。
 - Obsidian vault 可以用 iCloud、Syncthing、Git 或 Obsidian Sync 同步。
-- inbox 默认在本机用户目录，不建议提交到仓库。
+- SQLite 数据库默认在本机用户目录，不建议提交到仓库。
 
 ## 当前边界
 

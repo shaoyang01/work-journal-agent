@@ -30,7 +30,7 @@ def collect_new_kun_events(
     project = project_root or config.sources.kun.project_root
     existing_keys = {
         str(event.metadata.get("kun_event_key"))
-        for event in read_events(config.storage.inbox_path)
+        for event in read_events(config.storage, day=day)
         if event.metadata.get("kun_event_key")
     }
     events, scanned_files = events_from_kun_sources(root, project_root=project, config=config, day=day)
@@ -53,7 +53,7 @@ def import_kun_events(
 ) -> KunImportResult:
     result = collect_new_kun_events(config, day=day, storage_root=storage_root, project_root=project_root)
     for event in result.events:
-        append_event(config.storage.inbox_path, event)
+        append_event(config.storage, event)
     return result
 
 

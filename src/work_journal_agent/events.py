@@ -4,9 +4,11 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+from .sqlite_store import event_to_dict, is_sqlite_storage, store_for
 
 
 KNOWN_EVENT_TYPES = {
@@ -119,14 +121,25 @@ def parse_datetime(value: str) -> datetime:
     return parsed.astimezone()
 
 
-def append_event(path: Path, event: WorkEvent) -> None:
+def append_event(path: Path | Any, event: WorkEvent) -> None:
+    if is_sqlite_storage(path):
+        store = store_for(path)
+        with store.connect() as conn:
+            store.insert_event_dict(conn, event_to_dict(event))
+        return
+    path = event_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(event.to_json_line())
         handle.write("\n")
 
 
-def read_events(path: Path) -> list[WorkEvent]:
+def read_events(path: Path | Any, *, day: date | None = None) -> list[WorkEvent]:
+    if is_sqlite_storage(path):
+        store = store_for(path)
+        with store.connect() as conn:
+            return [WorkEvent.from_dict(payload) for payload in store.read_event_dicts(conn, day=day)]
+    path = event_path(path)
     if not path.exists():
         return []
     events: list[WorkEvent] = []
@@ -140,8 +153,18 @@ def read_events(path: Path) -> list[WorkEvent]:
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                 raise ValueError(f"invalid event at {path}:{line_number}: {exc}") from exc
             if event.summary:
-                events.append(event)
+                if day is None or event.occurred_at.date() == day:
+                    events.append(event)
     return events
+
+
+def event_path(value: Path | Any) -> Path:
+    if isinstance(value, Path):
+        return value
+    inbox_path = getattr(value, "inbox_path", None)
+    if inbox_path is not None:
+        return Path(inbox_path)
+    return Path(value)
 
 
 def truncate_text(value: str | None, limit: int) -> str | None:

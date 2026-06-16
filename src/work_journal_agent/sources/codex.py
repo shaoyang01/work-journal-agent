@@ -25,7 +25,7 @@ def collect_new_codex_events(config: AppConfig, *, day: date, sessions_root: Pat
 
     existing_keys = {
         str(event.metadata.get("codex_event_key"))
-        for event in read_events(config.storage.inbox_path)
+        for event in read_events(config.storage, day=day)
         if event.metadata.get("codex_event_key")
     }
     collected: list[WorkEvent] = []
@@ -43,7 +43,7 @@ def collect_new_codex_events(config: AppConfig, *, day: date, sessions_root: Pat
 def import_codex_events(config: AppConfig, *, day: date, sessions_root: Path | None = None) -> CodexImportResult:
     result = collect_new_codex_events(config, day=day, sessions_root=sessions_root)
     for event in result.events:
-        append_event(config.storage.inbox_path, event)
+        append_event(config.storage, event)
     return result
 
 

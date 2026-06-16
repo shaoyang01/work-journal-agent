@@ -76,11 +76,13 @@ class CliSourcesTests(unittest.TestCase):
 def write_config(base: Path, *, codex_enabled: bool, opencode_enabled: bool, knowledge_enabled: bool = False, write_knowledge_notes: bool = False) -> Path:
     config_path = base / "config.toml"
     inbox_path = base / "events.jsonl"
+    database_path = base / "work-journal.db"
     output_dir = base / "out"
     config_path.write_text(
         "\n".join(
             [
                 "[storage]",
+                f'database_path = "{database_path}"',
                 f'inbox_path = "{inbox_path}"',
                 f'output_dir = "{output_dir}"',
                 "",

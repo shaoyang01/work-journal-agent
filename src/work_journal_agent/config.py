@@ -12,6 +12,7 @@ from typing import Any
 class StorageConfig:
     inbox_path: Path
     output_dir: Path
+    database_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     data_dir = default_data_dir()
     inbox_path = expand_path(storage.get("inbox_path", data_dir / "inbox" / "events.jsonl"), base_dir=config_base)
+    database_path = expand_path(storage.get("database_path", data_dir / "work-journal.db"), base_dir=config_base)
     output_dir = expand_path(storage.get("output_dir", Path.cwd() / "out"), base_dir=config_base)
 
     vault_value = strip_wrapping_quotes(str(obsidian.get("vault_path", "")))
@@ -175,6 +177,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         storage=StorageConfig(
             inbox_path=inbox_path,
             output_dir=output_dir,
+            database_path=database_path,
         ),
         obsidian=ObsidianConfig(
             vault_path=vault_path,
