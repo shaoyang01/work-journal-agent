@@ -6,18 +6,20 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, default_config_path, default_data_dir, default_kun_storage_root, default_opencode_storage_root, default_zcode_storage_root, expand_path, load_config
-from .requirements import status_path
+from .requirements import load_status
 from .setup import create_config, create_secrets_file, configure_claude_hooks, configure_opencode_plugin, default_opencode_plugin_path
 
 
 def build_app_status(config_path: Path | None = None) -> dict[str, Any]:
     path = resolved_config_path(config_path)
-    status = read_json(status_path())
+    config = load_config(path)
+    status = load_status(storage=config.storage)
     return {
         "ok": True,
         "config_path": str(path),
         "config_exists": path.exists(),
         "data_dir": str(default_data_dir()),
+        "database_path": str(config.storage.database_path or default_data_dir() / "work-journal.db"),
         "status": status,
     }
 
@@ -31,7 +33,7 @@ def build_config_payload(config_path: Path | None = None) -> dict[str, Any]:
         "config_path": str(path),
         "config_exists": path.exists(),
         "storage": {
-            "inbox_path": str(config.storage.inbox_path),
+            "database_path": str(config.storage.database_path or default_data_dir() / "work-journal.db"),
             "output_dir": str(config.storage.output_dir),
         },
         "obsidian": {
@@ -95,6 +97,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     kun = object_value(sources.get("kun"))
     zcode = object_value(sources.get("zcode"))
 
+    database_path = path_value(storage.get("database_path"), default_data_dir() / "work-journal.db")
     inbox_path = path_value(storage.get("inbox_path"), default_data_dir() / "inbox" / "events.jsonl")
     output_dir = path_value(storage.get("output_dir"), default_data_dir() / "out")
     obsidian_vault = optional_path(obsidian.get("vault_path"))
@@ -112,6 +115,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     create_config(
         config_path=path,
         inbox_path=inbox_path,
+        database_path=database_path,
         output_dir=output_dir,
         obsidian_vault=obsidian_vault,
         daily_dir=daily_dir,
@@ -146,7 +150,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     if api_key:
         create_secrets_file(path.parent / "secrets.env", api_key)
 
-    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     if obsidian_vault:
         (obsidian_vault / daily_dir).mkdir(parents=True, exist_ok=True)

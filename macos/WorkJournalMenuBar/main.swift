@@ -29,6 +29,7 @@ private enum AppPaths {
 }
 
 private struct WorkJournalConfig {
+    var databasePath = "~/.local/share/work-journal-agent/work-journal.db"
     var inboxPath = "~/.local/share/work-journal-agent/inbox/events.jsonl"
     var outputDir = "~/.local/share/work-journal-agent/out"
 
@@ -71,6 +72,7 @@ private struct WorkJournalConfig {
             return config
         }
         let sections = parseTomlSections(text)
+        config.databasePath = sections.value("storage", "database_path", config.databasePath)
         config.inboxPath = sections.value("storage", "inbox_path", config.inboxPath)
         config.outputDir = sections.value("storage", "output_dir", config.outputDir)
 
@@ -112,7 +114,7 @@ private struct WorkJournalConfig {
     func toml() -> String {
         return """
         [storage]
-        inbox_path = "\(tomlString(inboxPath))"
+        database_path = "\(tomlString(databasePath))"
         output_dir = "\(tomlString(outputDir))"
 
         [obsidian]
@@ -301,7 +303,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     private let revertButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
 
-    private var inboxField = NSTextField()
+    private var databaseField = NSTextField()
     private var outputField = NSTextField()
     private var vaultField = NSTextField()
     private var dailyField = NSTextField()
@@ -474,7 +476,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         addSourceRow(to: section, y: 174, title: "Codex", detail: "读取 ~/.codex/sessions 中的会话事件。", toggle: codexSwitch, field: codexSessionsField, button: chooseButton("选择...", "codexSessions"), status: pathStatus(config.codexSessionsRoot, directory: true))
         claudeSwitch = switchControl()
         claudeSettingsField = textField(width: 440)
-        addSourceRow(to: section, y: 98, title: "Claude Code", detail: "配置 hooks 写入 Work Journal inbox。", toggle: claudeSwitch, field: claudeSettingsField, button: chooseButton("选择...", "claudeSettings"), status: pathStatus(config.claudeSettingsPath, directory: false))
+        addSourceRow(to: section, y: 98, title: "Claude Code", detail: "配置 hooks 写入 Work Journal 数据库。", toggle: claudeSwitch, field: claudeSettingsField, button: chooseButton("选择...", "claudeSettings"), status: pathStatus(config.claudeSettingsPath, directory: false))
         opencodeSwitch = switchControl()
         opencodeStorageField = textField(width: 440)
         addSourceRow(to: section, y: 22, title: "OpenCode", detail: "导入 OpenCode 本地 storage 事件。", toggle: opencodeSwitch, field: opencodeStorageField, button: chooseButton("选择...", "opencodeStorage"), status: pathStatus(config.opencodeStorageRoot, directory: true))
@@ -507,11 +509,11 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     }
 
     private func addPathsSection(y: CGFloat) {
-        let section = sectionView(title: "路径", subtitle: "配置事件 inbox、备用输出目录和 OpenCode 插件文件。", y: y, height: 232)
-        inboxField = textField(width: 478)
+        let section = sectionView(title: "路径", subtitle: "配置 SQLite 数据库、备用输出目录和 OpenCode 插件文件。", y: y, height: 232)
+        databaseField = textField(width: 478)
         outputField = textField(width: 478)
         opencodePluginField = textField(width: 478)
-        addRow(to: section, y: 146, label: "Inbox JSONL", control: inboxField, button: chooseButton("选择...", "inbox"))
+        addRow(to: section, y: 146, label: "SQLite 数据库", control: databaseField, button: chooseButton("选择...", "database"))
         addRow(to: section, y: 94, label: "备用输出目录", control: outputField, button: chooseButton("选择...", "output"))
         addRow(to: section, y: 42, label: "OpenCode 插件", control: opencodePluginField, button: chooseButton("选择...", "opencodePlugin"))
         documentView.addSubview(section)
@@ -551,7 +553,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     }
 
     private func loadFields() {
-        inboxField.stringValue = config.inboxPath
+        databaseField.stringValue = config.databasePath
         outputField.stringValue = config.outputDir
         vaultField.stringValue = config.vaultPath
         dailyField.stringValue = config.dailyDir
@@ -584,7 +586,8 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
 
     @objc private func saveConfig() {
         var next = WorkJournalConfig()
-        next.inboxPath = inboxField.stringValue
+        next.databasePath = databaseField.stringValue
+        next.inboxPath = config.inboxPath
         next.outputDir = outputField.stringValue
         next.vaultPath = vaultField.stringValue
         next.dailyDir = dailyField.stringValue
@@ -664,7 +667,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         let panel = NSOpenPanel()
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.canChooseFiles = id == "claudeSettings" || id == "opencodePlugin" || id == "inbox"
+        panel.canChooseFiles = id == "claudeSettings" || id == "opencodePlugin" || id == "database"
         panel.canChooseDirectories = !panel.canChooseFiles
         if panel.runModal() == .OK, let path = panel.url?.path {
             field(for: id)?.stringValue = path
@@ -698,7 +701,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         case "claudeSettings": return claudeSettingsField
         case "opencodeStorage": return opencodeStorageField
         case "opencodePlugin": return opencodePluginField
-        case "inbox": return inboxField
+        case "database": return databaseField
         case "output": return outputField
         default: return nil
         }
@@ -1109,6 +1112,7 @@ private final class RequirementReviewStore: ObservableObject {
         process.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
         process.arguments = ["python3", "-c", script] + arguments
         var environment = ProcessInfo.processInfo.environment
+        environment.merge(loadSecretsEnvironment()) { _, new in new }
         environment["PYTHONPATH"] = "\(projectRoot)/src"
         process.environment = environment
 
@@ -1125,11 +1129,11 @@ private final class RequirementReviewStore: ObservableObject {
         } else {
             try process.run()
         }
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
-        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
         if process.terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: "WorkJournalReview", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "python3 exited with \(process.terminationStatus)"])
         }
@@ -1143,6 +1147,38 @@ private final class RequirementReviewStore: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date())
     }
+}
+
+private func loadSecretsEnvironment() -> [String: String] {
+    guard let text = try? String(contentsOf: AppPaths.secretsPath, encoding: .utf8) else {
+        return [:]
+    }
+    var result: [String: String] = [:]
+    for rawLine in text.split(whereSeparator: \.isNewline) {
+        var line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.isEmpty || line.hasPrefix("#") {
+            continue
+        }
+        if line.hasPrefix("export ") {
+            line = String(line.dropFirst("export ".count)).trimmingCharacters(in: .whitespaces)
+        }
+        guard let equalsIndex = line.firstIndex(of: "=") else {
+            continue
+        }
+        let key = String(line[..<equalsIndex]).trimmingCharacters(in: .whitespaces)
+        var value = String(line[line.index(after: equalsIndex)...]).trimmingCharacters(in: .whitespaces)
+        if value.count >= 2 {
+            if value.hasPrefix("'") && value.hasSuffix("'") {
+                value = String(value.dropFirst().dropLast()).replacingOccurrences(of: "'\\''", with: "'")
+            } else if value.hasPrefix("\"") && value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
+            }
+        }
+        if !key.isEmpty {
+            result[key] = value
+        }
+    }
+    return result
 }
 
 private struct RequirementReviewView: View {
@@ -1307,7 +1343,7 @@ private struct RequirementReviewView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.blue)
-            .disabled(store.isLoading || store.candidates.isEmpty)
+            .disabled(store.candidates.isEmpty)
         }
         .padding(.horizontal, 28)
         .frame(height: 72)
@@ -1708,7 +1744,7 @@ private struct WorkJournalSettingsView: View {
     private var sourcesCard: some View {
         SettingsCard(title: "数据源", subtitle: "采集本机 Agent 事件源。") {
             sourceRow(title: "Codex", detail: "读取 ~/.codex/sessions 中的会话事件。", isOn: $draft.codexEnabled, text: $draft.codexSessionsRoot, chooser: .codexSessions, status: pathStatus(draft.codexSessionsRoot, directory: true))
-            sourceRow(title: "Claude Code", detail: "配置 hooks 写入 Work Journal inbox。", isOn: $draft.claudeEnabled, text: $draft.claudeSettingsPath, chooser: .claudeSettings, status: pathStatus(draft.claudeSettingsPath, directory: false))
+            sourceRow(title: "Claude Code", detail: "配置 hooks 写入 Work Journal 数据库。", isOn: $draft.claudeEnabled, text: $draft.claudeSettingsPath, chooser: .claudeSettings, status: pathStatus(draft.claudeSettingsPath, directory: false))
             sourceRow(title: "OpenCode", detail: "导入 OpenCode 本地 storage 事件。", isOn: $draft.opencodeEnabled, text: $draft.opencodeStorageRoot, chooser: .opencodeStorage, status: pathStatus(draft.opencodeStorageRoot, directory: true))
             sourceRow(title: "Kun", detail: "导入 Kun threads 与项目 .kunsdd 需求文档。", isOn: $draft.kunEnabled, text: $draft.kunStorageRoot, chooser: .kunStorage, status: pathStatus(draft.kunStorageRoot, directory: true))
             sourceRow(title: "ZCode", detail: "导入 ZCode 本地 sqlite 会话与工具事件。", isOn: $draft.zcodeEnabled, text: $draft.zcodeStorageRoot, chooser: .zcodeStorage, status: pathStatus(draft.zcodeStorageRoot, directory: true))
@@ -1747,8 +1783,8 @@ private struct WorkJournalSettingsView: View {
     }
 
     private var pathsCard: some View {
-        SettingsCard(title: "路径", subtitle: "配置事件 inbox、备用输出目录、OpenCode 插件和 Kun 项目目录。") {
-            fieldRow("Inbox JSONL", text: $draft.inboxPath, chooser: .inbox)
+        SettingsCard(title: "路径", subtitle: "配置 SQLite 数据库、备用输出目录、OpenCode 插件和 Kun 项目目录。") {
+            fieldRow("SQLite 数据库", text: $draft.databasePath, chooser: .database)
             fieldRow("备用输出目录", text: $draft.outputDir, chooser: .output)
             fieldRow("OpenCode 插件", text: $draft.opencodePluginPath, chooser: .opencodePlugin)
             fieldRow("Kun 项目根目录", text: $draft.kunProjectRoot, chooser: .kunProjectRoot)
@@ -2016,7 +2052,7 @@ private struct WorkJournalSettingsView: View {
             case .opencodeStorage: draft.opencodeStorageRoot = path
             case .kunStorage: draft.kunStorageRoot = path
             case .zcodeStorage: draft.zcodeStorageRoot = path
-            case .inbox: draft.inboxPath = path
+            case .database: draft.databasePath = path
             case .output: draft.outputDir = path
             case .opencodePlugin: draft.opencodePluginPath = path
             case .kunProjectRoot: draft.kunProjectRoot = path
@@ -2069,14 +2105,14 @@ private enum PathTarget {
     case opencodeStorage
     case kunStorage
     case zcodeStorage
-    case inbox
+    case database
     case output
     case opencodePlugin
     case kunProjectRoot
 
     var canChooseFiles: Bool {
         switch self {
-        case .claudeSettings, .inbox, .opencodePlugin:
+        case .claudeSettings, .database, .opencodePlugin:
             return true
         case .vault, .codexSessions, .opencodeStorage, .kunStorage, .zcodeStorage, .output, .kunProjectRoot:
             return false
@@ -2225,8 +2261,8 @@ private func expandTilde(_ value: String) -> String {
 }
 
 private func createRuntimeDirectories(for config: WorkJournalConfig) {
-    let inboxParent = URL(fileURLWithPath: expandTilde(config.inboxPath)).deletingLastPathComponent()
-    try? FileManager.default.createDirectory(at: inboxParent, withIntermediateDirectories: true)
+    let databaseParent = URL(fileURLWithPath: expandTilde(config.databasePath)).deletingLastPathComponent()
+    try? FileManager.default.createDirectory(at: databaseParent, withIntermediateDirectories: true)
     try? FileManager.default.createDirectory(atPath: expandTilde(config.outputDir), withIntermediateDirectories: true)
 }
 

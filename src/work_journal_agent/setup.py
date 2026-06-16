@@ -19,7 +19,7 @@ OPENCODE_PLUGIN_NAME = "work-journal-agent.js"
 @dataclass(frozen=True)
 class SetupResult:
     config_path: Path
-    inbox_path: Path
+    database_path: Path
     output_dir: Path
     obsidian_vault: Path | None
     codex_sessions_root: Path | None
@@ -55,11 +55,12 @@ def run_interactive_setup(
         yes=yes,
     )
     data_dir = default_data_dir()
-    inbox_path = ask_path(
-        "事件 inbox 文件位置",
-        data_dir / "inbox" / "events.jsonl",
+    database_path = ask_path(
+        "SQLite 数据库文件位置",
+        data_dir / "work-journal.db",
         yes=yes,
     )
+    inbox_path = data_dir / "inbox" / "events.jsonl"
     output_dir = ask_path(
         "未配置 Obsidian 时的备用输出目录",
         data_dir / "out",
@@ -128,6 +129,7 @@ def run_interactive_setup(
     create_config(
         config_path=config_path,
         inbox_path=inbox_path,
+        database_path=database_path,
         output_dir=output_dir,
         obsidian_vault=obsidian_vault,
         daily_dir=daily_dir,
@@ -151,7 +153,7 @@ def run_interactive_setup(
     )
     if enable_ai and deepseek_api_key:
         create_secrets_file(config_path.parent / "secrets.env", deepseek_api_key)
-    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     if obsidian_vault:
         (obsidian_vault / daily_dir).mkdir(parents=True, exist_ok=True)
@@ -183,7 +185,7 @@ def run_interactive_setup(
 
     result = SetupResult(
         config_path=config_path,
-        inbox_path=inbox_path,
+        database_path=database_path,
         output_dir=output_dir,
         obsidian_vault=obsidian_vault,
         codex_sessions_root=codex_sessions_root,
@@ -202,7 +204,7 @@ def run_interactive_setup(
     print("")
     print("配置完成。")
     print(f"- 配置文件：{result.config_path}")
-    print(f"- 事件 inbox：{result.inbox_path}")
+    print(f"- SQLite 数据库：{result.database_path}")
     print(f"- 输出位置：{result.obsidian_vault or result.output_dir}")
     if result.codex_enabled:
         print(f"- Codex sessions：{result.codex_sessions_root}")
@@ -233,6 +235,7 @@ def create_config(
     daily_dir: str,
     task_dir: str,
     write_task_notes: bool,
+    database_path: Path | None = None,
     enable_ai: bool,
     knowledge_dir: str = "Knowledge",
     write_knowledge_notes: bool = False,
@@ -258,6 +261,7 @@ def create_config(
     ai_knowledge_enabled: bool = False,
 ) -> None:
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    database = database_path or default_data_dir() / "work-journal.db"
     codex_root = codex_sessions_root or Path.home() / ".codex" / "sessions"
     claude_settings = claude_settings_path or Path.home() / ".claude" / "settings.json"
     opencode_storage = opencode_storage_root or default_opencode_storage_root()
@@ -268,7 +272,7 @@ def create_config(
     content = "\n".join(
         [
             "[storage]",
-            f'inbox_path = "{toml_string(inbox_path)}"',
+            f'database_path = "{toml_string(database)}"',
             f'output_dir = "{toml_string(output_dir)}"',
             "",
             "[obsidian]",

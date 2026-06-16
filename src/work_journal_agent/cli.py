@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
+from .config import default_data_dir, load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
 from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
@@ -16,6 +16,7 @@ from .requirements import apply_requirement_assignments, build_review_payload, f
 from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
+from .sqlite_store import migrate_legacy_storage
 from .ai import generate_knowledge_topics, review_task_clusters, summarize_tasks
 from .sources.codex import collect_new_codex_events, import_codex_events
 from .sources.kun import collect_new_kun_events, import_kun_events
@@ -98,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
     app_config_parser.set_defaults(func=cmd_app_config)
     app_config_save_parser = app_subparsers.add_parser("config-save", help="Read native app config JSON from stdin")
     app_config_save_parser.set_defaults(func=cmd_app_config_save)
+
+    migrate_parser = subparsers.add_parser("migrate-storage", help="Migrate legacy JSON storage into SQLite")
+    migrate_parser.add_argument("--legacy-inbox", type=Path, help="Legacy inbox events.jsonl path")
+    migrate_parser.add_argument("--legacy-requirements-dir", type=Path, help="Legacy requirements directory")
+    migrate_parser.add_argument("--legacy-state-dir", type=Path, help="Legacy state directory")
+    migrate_parser.add_argument("--legacy-ai-cache-dir", type=Path, help="Legacy AI cache directory")
+    migrate_parser.set_defaults(func=cmd_migrate_storage)
 
     codex_parser = subparsers.add_parser("codex", help="Codex source commands")
     codex_subparsers = codex_parser.add_subparsers(dest="codex_command", required=True)
@@ -193,7 +201,7 @@ def cmd_event_add(args: argparse.Namespace) -> None:
         files=args.files,
         metadata=metadata,
     )
-    append_event(config.storage.inbox_path, event)
+    append_event(config.storage, event)
     print(event.to_json_line())
 
 
@@ -206,14 +214,14 @@ def cmd_note(args: argparse.Namespace) -> None:
         cwd=args.cwd,
         files=args.files,
     )
-    append_event(config.storage.inbox_path, event)
+    append_event(config.storage, event)
     print(event.to_json_line())
 
 
 def cmd_generate_daily(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
-    events = filter_ignored_events(args.date, events)
+    events = read_events(config.storage, day=args.date)
+    events = filter_ignored_events(args.date, events, storage=config.storage)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
@@ -239,8 +247,8 @@ def cmd_generate_knowledge(args: argparse.Namespace) -> None:
     if not config.obsidian.write_knowledge_notes:
         print("Knowledge notes disabled")
         return
-    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
-    events = filter_ignored_events(args.date, events)
+    events = read_events(config.storage, day=args.date)
+    events = filter_ignored_events(args.date, events, storage=config.storage)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     ai_result = summarize_tasks(config, tasks)
     knowledge_result = generate_knowledge_topics(config, tasks)
@@ -306,13 +314,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 day=args.date,
                 storage_root=config.sources.zcode.storage_root,
             )
-    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
+    events = read_events(config.storage, day=args.date)
     if args.dry_run:
         events.extend(codex_result.events)
         events.extend(opencode_result.events)
         events.extend(kun_result.events)
         events.extend(zcode_result.events)
-    events = filter_ignored_events(args.date, events)
+    events = filter_ignored_events(args.date, events, storage=config.storage)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
@@ -381,6 +389,33 @@ def cmd_app_config_save(args: argparse.Namespace) -> None:
     print_json(save_config_payload(payload, project_root=project_root, config_path=args.config))
 
 
+def cmd_migrate_storage(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    data_dir = default_data_dir()
+    result = migrate_legacy_storage(
+        config.storage,
+        legacy_inbox_path=args.legacy_inbox or config.storage.inbox_path,
+        legacy_requirements_dir=args.legacy_requirements_dir or data_dir / "requirements",
+        legacy_state_dir=args.legacy_state_dir or data_dir / "state",
+        legacy_ai_cache_dir=args.legacy_ai_cache_dir or config.ai.cache_dir,
+    )
+    print_json(
+        {
+            "ok": True,
+            "database_path": str(result.database_path),
+            "imported": {
+                "events": result.events,
+                "requirement_threads": result.requirement_threads,
+                "requirement_daily": result.requirement_daily,
+                "status": result.status,
+                "ai_summary": result.ai_summary,
+                "ai_knowledge": result.ai_knowledge,
+                "ai_cluster_review": result.ai_cluster_review,
+            },
+        }
+    )
+
+
 def cmd_opencode_import(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     result = import_opencode_events(config, day=args.date, storage_root=args.storage_root or config.sources.opencode.storage_root)
@@ -391,7 +426,7 @@ def cmd_opencode_hook(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     payload = json.load(sys.stdin)
     event = event_from_hook_payload(payload, config=config, event_type_override=args.event_type)
-    append_event(config.storage.inbox_path, event)
+    append_event(config.storage, event)
     print(event.to_json_line())
 
 
@@ -442,13 +477,13 @@ def cmd_claude_hook(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     payload = json.load(sys.stdin)
     event = event_from_claude_payload(payload, args.event_type, config.privacy.max_raw_request_chars, config.privacy.store_transcript_paths)
-    append_event(config.storage.inbox_path, event)
+    append_event(config.storage, event)
     print(event.to_json_line())
 
 
 def cmd_list(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == args.date]
+    events = read_events(config.storage, day=args.date)
     for event in events:
         print(event.to_json_line())
 

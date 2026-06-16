@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .config import AppConfig
-from .requirements import build_review_payload, load_daily_review, save_review_decisions, status_path
+from .requirements import build_review_payload, load_daily_review, load_status, save_review_decisions
 
 
 def run_review_server(config: AppConfig, *, day: date, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> str:
@@ -75,7 +75,7 @@ def make_handler(*, config: AppConfig):
                 self.respond_json(build_review_payload(config, day))
                 return
             if parsed.path == "/api/status":
-                self.respond_json(read_json(status_path()))
+                self.respond_json(load_status(storage=config.storage))
                 return
             self.respond_text("not found", status=404)
 

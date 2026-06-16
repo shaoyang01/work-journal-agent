@@ -84,6 +84,10 @@ class ConfigTests(unittest.TestCase):
             config_path.write_text(
                 "\n".join(
                     [
+                        "[storage]",
+                        'database_path = "work-journal.db"',
+                        'output_dir = "out"',
+                        "",
                         "[ai]",
                         "enabled = true",
                         "cache_enabled = true",
@@ -122,6 +126,8 @@ class ConfigTests(unittest.TestCase):
 
             config = load_config(config_path)
 
+            self.assertEqual(config.storage.database_path, Path(temp_dir) / "work-journal.db")
+            self.assertEqual(config.storage.output_dir, Path(temp_dir) / "out")
             self.assertTrue(config.ai.cache_enabled)
             self.assertEqual(config.ai.cache_retention_days, 3)
             self.assertEqual(config.ai.cache_dir, Path(temp_dir) / "cache")

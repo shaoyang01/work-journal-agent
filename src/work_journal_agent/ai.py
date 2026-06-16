@@ -26,6 +26,7 @@ from .ai_cache import (
 )
 from .events import WorkEvent
 from .merge import TaskSummary, repo_identity, task_from_events, task_key_for_events
+from .sqlite_store import is_sqlite_storage, store_for
 from .writers.obsidian import compact_items, is_noise_item, relative_files, unique
 
 
@@ -166,7 +167,8 @@ def needs_cluster_review(tasks: list[TaskSummary]) -> bool:
 
 def summarize_tasks_with_cache(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> int:
     day = tasks[0].day
-    cache = load_cache(config.ai.cache_dir, day)
+    cache_target = config.storage if is_sqlite_storage(config.storage) else config.ai.cache_dir
+    cache = load_cache(cache_target, day)
     cache_entries = [entry for entry in cache.get("tasks") or [] if isinstance(entry, dict)]
     contexts_by_key: dict[str, dict[str, Any]] = {}
     request_items: list[dict[str, Any]] = []
@@ -201,11 +203,11 @@ def summarize_tasks_with_cache(config: AppConfig, api_key: str, tasks: list[Task
         apply_ai_payload(tasks, payload)
 
     save_cache(
-        config.ai.cache_dir,
+        cache_target,
         day,
         [task_cache_entry(task, context=contexts_by_key[task.key], ai_result=ai_result_from_task(task)) for task in tasks],
     )
-    prune_cache(config.ai.cache_dir, keep_days=config.ai.cache_retention_days, today=day)
+    prune_cache(cache_target, keep_days=config.ai.cache_retention_days, today=day)
     return len(request_items)
 
 
@@ -529,6 +531,13 @@ def knowledge_cache_path(config: AppConfig, tasks: list[TaskSummary]) -> Path:
 def load_knowledge_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str) -> Any | None:
     if not config.ai.cache_enabled:
         return None
+    if is_sqlite_storage(config.storage):
+        store = store_for(config.storage)
+        with store.connect() as conn:
+            payload = store.load_ai_cache(conn, "knowledge", tasks[0].day)
+        if not isinstance(payload, dict) or payload.get("input_hash") != input_hash:
+            return None
+        return payload.get("knowledge")
     path = knowledge_cache_path(config, tasks)
     if not path.exists():
         return None
@@ -543,6 +552,17 @@ def load_knowledge_cache(config: AppConfig, tasks: list[TaskSummary], input_hash
 
 def save_knowledge_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str, knowledge: Any) -> None:
     if not config.ai.cache_enabled:
+        return
+    if is_sqlite_storage(config.storage):
+        payload = {
+            "date": tasks[0].day.isoformat(),
+            "input_hash": input_hash,
+            "knowledge": knowledge,
+        }
+        store = store_for(config.storage)
+        with store.connect() as conn:
+            store.save_ai_cache(conn, "knowledge", tasks[0].day, payload)
+        prune_cache(config.storage, keep_days=config.ai.cache_retention_days, today=tasks[0].day, namespace="knowledge")
         return
     path = knowledge_cache_path(config, tasks)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -680,6 +700,13 @@ def cluster_review_cache_path(config: AppConfig, tasks: list[TaskSummary]) -> Pa
 def load_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str) -> Any | None:
     if not config.ai.cache_enabled:
         return None
+    if is_sqlite_storage(config.storage):
+        store = store_for(config.storage)
+        with store.connect() as conn:
+            payload = store.load_ai_cache(conn, "cluster-review", tasks[0].day)
+        if not isinstance(payload, dict) or payload.get("input_hash") != input_hash:
+            return None
+        return payload.get("review")
     path = cluster_review_cache_path(config, tasks)
     if not path.exists():
         return None
@@ -694,6 +721,17 @@ def load_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input
 
 def save_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str, review: Any) -> None:
     if not config.ai.cache_enabled:
+        return
+    if is_sqlite_storage(config.storage):
+        payload = {
+            "date": tasks[0].day.isoformat(),
+            "input_hash": input_hash,
+            "review": review,
+        }
+        store = store_for(config.storage)
+        with store.connect() as conn:
+            store.save_ai_cache(conn, "cluster-review", tasks[0].day, payload)
+        prune_cache(config.storage, keep_days=config.ai.cache_retention_days, today=tasks[0].day, namespace="cluster-review")
         return
     path = cluster_review_cache_path(config, tasks)
     path.parent.mkdir(parents=True, exist_ok=True)

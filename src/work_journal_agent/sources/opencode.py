@@ -36,7 +36,7 @@ def collect_new_opencode_events(
 
     existing_keys = {
         str(event.metadata.get("opencode_event_key"))
-        for event in read_events(config.storage.inbox_path)
+        for event in read_events(config.storage, day=day)
         if event.metadata.get("opencode_event_key")
     }
     events, scanned_files = events_from_storage(root, config=config, day=day)
@@ -58,7 +58,7 @@ def import_opencode_events(
 ) -> OpenCodeImportResult:
     result = collect_new_opencode_events(config, day=day, storage_root=storage_root)
     for event in result.events:
-        append_event(config.storage.inbox_path, event)
+        append_event(config.storage, event)
     return result
 
 

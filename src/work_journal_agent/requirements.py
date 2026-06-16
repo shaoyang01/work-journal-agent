@@ -11,6 +11,7 @@ from .ai import review_task_clusters
 from .config import AppConfig, default_data_dir
 from .events import WorkEvent, read_events
 from .merge import TaskSummary, group_events, repo_identity, task_from_events
+from .sqlite_store import is_sqlite_storage, store_for
 from .writers.obsidian import compact_items, display_title, relative_files
 
 
@@ -41,11 +42,11 @@ def status_path() -> Path:
 
 
 def build_review_payload(config: AppConfig, day: date) -> dict[str, Any]:
-    events = [event for event in read_events(config.storage.inbox_path) if event.occurred_at.date() == day]
+    events = read_events(config.storage, day=day)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
     cluster_result = review_task_clusters(config, tasks)
     tasks = cluster_result.tasks
-    existing_daily = load_daily_review(day)
+    existing_daily = load_daily_review(day, storage=config.storage)
     candidates = [candidate_from_task(task, existing_daily=existing_daily) for task in tasks if task.event_count > 0]
     ignored_event_ids = set(existing_daily.get("ignored_event_ids") or [])
     pending = [candidate for candidate in candidates if candidate.get("status") not in {"confirmed", "ignored"}]
@@ -61,19 +62,19 @@ def build_review_payload(config: AppConfig, day: date) -> dict[str, Any]:
             "cluster_review": cluster_result.message,
         },
     }
-    write_status(day=day, pending_count=len(pending), daily_path=daily_note_path(config, day))
+    write_status(day=day, pending_count=len(pending), daily_path=daily_note_path(config, day), storage=config.storage)
     return payload
 
 
-def filter_ignored_events(day: date, events: list[WorkEvent]) -> list[WorkEvent]:
-    ignored_event_ids = ignored_event_ids_for_day(day)
+def filter_ignored_events(day: date, events: list[WorkEvent], *, storage: Any | None = None) -> list[WorkEvent]:
+    ignored_event_ids = ignored_event_ids_for_day(day, storage=storage)
     if not ignored_event_ids:
         return events
     return [event for event in events if event.id not in ignored_event_ids]
 
 
-def ignored_event_ids_for_day(day: date) -> set[str]:
-    daily_payload = load_daily_review(day)
+def ignored_event_ids_for_day(day: date, *, storage: Any | None = None) -> set[str]:
+    daily_payload = load_daily_review(day, storage=storage)
     return {str(value) for value in daily_payload.get("ignored_event_ids") or [] if value}
 
 
@@ -202,10 +203,7 @@ def first_non_empty(items: Any) -> str:
 
 
 def save_review_decisions(day: date, decisions: list[dict[str, Any]], *, config: AppConfig) -> dict[str, Any]:
-    paths = requirement_paths()
-    paths.daily_dir.mkdir(parents=True, exist_ok=True)
-    paths.root.mkdir(parents=True, exist_ok=True)
-    threads = load_threads()
+    threads = load_threads(storage=config.storage)
     saved_assignments: list[dict[str, Any]] = []
     ignored_event_ids: list[str] = []
     for decision in decisions:
@@ -225,17 +223,27 @@ def save_review_decisions(day: date, decisions: list[dict[str, Any]], *, config:
         requirement_id = requirement_id_for(project=project, title=title)
         upsert_thread(threads, requirement_id=requirement_id, decision=decision)
         saved_assignments.append(normalize_assignment(decision, requirement_id=requirement_id))
-    threads_payload = {"updated_at": now_iso(), "requirements": sorted(threads.values(), key=lambda item: item["updated_at"], reverse=True)}
-    paths.threads.write_text(json.dumps(threads_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     daily_payload = {
         "date": day.isoformat(),
         "updated_at": now_iso(),
         "assignments": saved_assignments,
         "ignored_event_ids": sorted(set(ignored_event_ids)),
     }
-    daily_review_path(day).write_text(json.dumps(daily_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if is_sqlite_storage(config.storage):
+        store = store_for(config.storage)
+        with store.connect() as conn:
+            for requirement_id, thread in threads.items():
+                store.save_requirement_thread(conn, requirement_id, thread)
+            store.save_daily_review(conn, day, daily_payload)
+    else:
+        paths = requirement_paths()
+        paths.daily_dir.mkdir(parents=True, exist_ok=True)
+        paths.root.mkdir(parents=True, exist_ok=True)
+        threads_payload = {"updated_at": now_iso(), "requirements": sorted(threads.values(), key=lambda item: item["updated_at"], reverse=True)}
+        paths.threads.write_text(json.dumps(threads_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        daily_review_path(day).write_text(json.dumps(daily_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     pending_count = len([item for item in saved_assignments if item.get("status") not in {"confirmed", "ignored"}])
-    write_status(day=day, pending_count=pending_count, daily_path=daily_note_path(config, day))
+    write_status(day=day, pending_count=pending_count, daily_path=daily_note_path(config, day), storage=config.storage)
     return daily_payload
 
 
@@ -252,7 +260,11 @@ def normalize_assignment(decision: dict[str, Any], *, requirement_id: str) -> di
     }
 
 
-def load_threads() -> dict[str, dict[str, Any]]:
+def load_threads(*, storage: Any | None = None) -> dict[str, dict[str, Any]]:
+    if is_sqlite_storage(storage):
+        store = store_for(storage)
+        with store.connect() as conn:
+            return store.load_requirement_threads(conn)
     path = requirement_paths().threads
     if not path.exists():
         return {}
@@ -267,7 +279,11 @@ def load_threads() -> dict[str, dict[str, Any]]:
     return result
 
 
-def load_daily_review(day: date) -> dict[str, Any]:
+def load_daily_review(day: date, *, storage: Any | None = None) -> dict[str, Any]:
+    if is_sqlite_storage(storage):
+        store = store_for(storage)
+        with store.connect() as conn:
+            return store.load_daily_review(conn, day)
     path = daily_review_path(day)
     if not path.exists():
         return {}
@@ -318,8 +334,8 @@ def requirement_id_for(*, project: str, title: str) -> str:
 
 
 def apply_requirement_assignments(config: AppConfig, day: date, tasks: list[TaskSummary]) -> None:
-    daily_payload = load_daily_review(day)
-    threads = load_threads()
+    daily_payload = load_daily_review(day, storage=config.storage)
+    threads = load_threads(storage=config.storage)
     assignments = [item for item in daily_payload.get("assignments") or [] if isinstance(item, dict)]
     for task in tasks:
         task_event_ids = set(task.event_ids)
@@ -429,16 +445,36 @@ def first_text_reversed(values: Any) -> str | None:
     return None
 
 
-def write_status(*, day: date, pending_count: int, daily_path: Path) -> None:
-    path = status_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+def write_status(*, day: date, pending_count: int, daily_path: Path, storage: Any | None = None) -> None:
     payload = {
         "date": day.isoformat(),
         "pending_requirements": pending_count,
         "daily_path": str(daily_path),
         "updated_at": now_iso(),
     }
+    if is_sqlite_storage(storage):
+        store = store_for(storage)
+        with store.connect() as conn:
+            store.save_status(conn, payload)
+        return
+    path = status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def load_status(*, storage: Any | None = None) -> dict[str, Any]:
+    if is_sqlite_storage(storage):
+        store = store_for(storage)
+        with store.connect() as conn:
+            return store.load_status(conn)
+    path = status_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def daily_note_path(config: AppConfig, day: date) -> Path:
