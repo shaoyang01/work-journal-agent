@@ -15,7 +15,7 @@ output_dir = "~/.local/share/work-journal-agent/out"
 vault_path = ""
 daily_dir = "Daily"
 task_dir = "Tasks"
-write_task_notes = false
+write_task_notes = true
 knowledge_dir = "Knowledge"
 write_knowledge_notes = false
 

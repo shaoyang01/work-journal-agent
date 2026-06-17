@@ -652,6 +652,8 @@ def save_review_decisions(day: date, decisions: list[dict[str, Any]], *, config:
     for decision in decisions:
         if not isinstance(decision, dict):
             continue
+        source_project = project_for_decision_events(decision, existing_daily)
+        decision = {**decision, "project": source_project}
         status = str(decision.get("status") or "pending")
         event_ids = [str(value) for value in decision.get("event_ids") or [] if value]
         if status == "ignored":
@@ -667,7 +669,7 @@ def save_review_decisions(day: date, decisions: list[dict[str, Any]], *, config:
             normalized_decision = {
                 **decision,
                 "title": str(selected_thread.get("title") or decision.get("title") or "").strip(),
-                "project": str(selected_thread.get("project") or decision.get("project") or "unknown").strip() or "unknown",
+                "project": merge_project_values(selected_thread.get("projects"), selected_thread.get("project"), source_project),
                 "requirement_type": str(selected_thread.get("type") or decision.get("requirement_type") or "direct"),
             }
             requirement_id = selected_requirement_id
@@ -675,7 +677,7 @@ def save_review_decisions(day: date, decisions: list[dict[str, Any]], *, config:
             normalized_decision = decision
             title = str(normalized_decision.get("title") or "").strip()
             project = str(normalized_decision.get("project") or "unknown").strip() or "unknown"
-            requirement_id = requirement_id_for(project=project, title=title)
+            requirement_id = find_requirement_id_by_title(threads, title) or requirement_id_for(project=project, title=title)
         upsert_thread(threads, requirement_id=requirement_id, decision=normalized_decision)
         saved_assignments.append(normalize_assignment(normalized_decision, requirement_id=requirement_id))
     daily_payload = {
@@ -713,6 +715,21 @@ def normalize_assignment(decision: dict[str, Any], *, requirement_id: str) -> di
     }
 
 
+def project_for_decision_events(decision: dict[str, Any], existing_daily: dict[str, Any]) -> str:
+    event_ids = {str(value) for value in decision.get("event_ids") or [] if value}
+    projects: list[str] = []
+    if event_ids:
+        for candidate in existing_daily.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_event_ids = {str(value) for value in candidate.get("event_ids") or [] if value}
+            if event_ids.intersection(candidate_event_ids):
+                projects.extend(projects_from_values(candidate.get("project")))
+    if not projects:
+        projects.extend(projects_from_values(decision.get("project")))
+    return project_display(projects)
+
+
 def requirement_options(threads: dict[str, dict[str, Any]], *, active_only: bool = False) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for thread in threads.values():
@@ -729,7 +746,7 @@ def requirement_options(threads: dict[str, dict[str, Any]], *, active_only: bool
             {
                 "id": requirement_id,
                 "title": title,
-                "project": str(thread.get("project") or "unknown"),
+                "project": thread_project_display(thread),
                 "requirement_type": str(thread.get("type") or "direct"),
                 "status": status,
                 "note": str(thread.get("note") or ""),
@@ -762,19 +779,20 @@ def save_requirement_threads(items: list[dict[str, Any]], *, config: AppConfig) 
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
-        project = str(item.get("project") or "unknown").strip() or "unknown"
         if not title:
             continue
         raw_id = str(item.get("id") or "").strip()
         if raw_id and not raw_id.startswith(MANUAL_REQUIREMENT_ID_PREFIX):
             requirement_id = raw_id
         else:
-            requirement_id = requirement_id_for(project=project, title=title)
+            requirement_id = find_requirement_id_by_title(threads, title) or requirement_id_for(project="", title=title)
         existing = threads.get(requirement_id, {})
+        projects = projects_from_values(existing.get("projects"), existing.get("project"))
         threads[requirement_id] = {
             "id": requirement_id,
             "title": title,
-            "project": project,
+            "project": project_display(projects),
+            "projects": projects,
             "type": str(item.get("requirement_type") or existing.get("type") or "direct"),
             "status": normalize_thread_status(item.get("status") or existing.get("status")),
             "note": str(item.get("note") or "").strip(),
@@ -784,6 +802,39 @@ def save_requirement_threads(items: list[dict[str, Any]], *, config: AppConfig) 
         }
     persist_threads(threads, storage=config.storage)
     return build_requirement_management_payload(config)
+
+
+def merge_requirement_threads(primary_id: str, duplicate_ids: list[str], *, config: AppConfig) -> dict[str, Any]:
+    primary_id = str(primary_id or "").strip()
+    duplicate_ids = [str(value).strip() for value in duplicate_ids if str(value or "").strip()]
+    if not primary_id:
+        raise ValueError("primary_id is required")
+    duplicate_ids = [value for value in duplicate_ids if value != primary_id]
+    if not duplicate_ids:
+        raise ValueError("duplicate_ids must contain at least one id different from primary_id")
+
+    threads = load_threads(storage=config.storage)
+    if primary_id not in threads:
+        raise ValueError(f"primary requirement not found: {primary_id}")
+    missing = [requirement_id for requirement_id in duplicate_ids if requirement_id not in threads]
+    if missing:
+        raise ValueError(f"duplicate requirement not found: {', '.join(missing)}")
+
+    primary = dict(threads[primary_id])
+    merged_ids: list[str] = []
+    for duplicate_id in duplicate_ids:
+        duplicate = threads.pop(duplicate_id)
+        primary = merge_thread_payload(primary, duplicate, primary_id=primary_id)
+        merged_ids.append(duplicate_id)
+    primary["id"] = primary_id
+    primary["updated_at"] = now_iso()
+    threads[primary_id] = primary
+
+    rewrite_requirement_references(config.storage, primary=primary, duplicate_ids=set(merged_ids))
+    persist_threads(threads, storage=config.storage, deleted_ids=merged_ids)
+    payload = build_requirement_management_payload(config)
+    payload["merged"] = {"primary_id": primary_id, "duplicate_ids": merged_ids}
+    return payload
 
 
 def load_threads(*, storage: Any | None = None) -> dict[str, dict[str, Any]]:
@@ -805,10 +856,15 @@ def load_threads(*, storage: Any | None = None) -> dict[str, dict[str, Any]]:
     return result
 
 
-def persist_threads(threads: dict[str, dict[str, Any]], *, storage: Any | None = None) -> None:
+def persist_threads(threads: dict[str, dict[str, Any]], *, storage: Any | None = None, deleted_ids: list[str] | None = None) -> None:
     if is_sqlite_storage(storage):
         store = store_for(storage)
         with store.connect() as conn:
+            existing_ids = set(store.load_requirement_threads(conn))
+            for requirement_id in sorted(existing_ids - set(threads)):
+                store.delete_requirement_thread(conn, requirement_id)
+            for requirement_id in deleted_ids or []:
+                store.delete_requirement_thread(conn, requirement_id)
             for requirement_id, thread in threads.items():
                 store.save_requirement_thread(conn, requirement_id, thread)
         return
@@ -848,10 +904,12 @@ def upsert_thread(threads: dict[str, dict[str, Any]], *, requirement_id: str, de
     now = now_iso()
     existing = threads.get(requirement_id, {})
     anchors = merge_anchors(existing.get("anchors"), decision.get("anchors"))
+    projects = projects_from_values(existing.get("projects"), existing.get("project"), decision.get("project"))
     threads[requirement_id] = {
         "id": requirement_id,
         "title": str(decision.get("title") or existing.get("title") or "").strip(),
-        "project": str(decision.get("project") or existing.get("project") or "unknown"),
+        "project": project_display(projects),
+        "projects": projects,
         "type": str(decision.get("requirement_type") or existing.get("type") or "direct"),
         "status": normalize_thread_status(decision.get("thread_status") or existing.get("status")),
         "note": str(decision.get("note") or existing.get("note") or "").strip(),
@@ -890,12 +948,128 @@ def merge_anchors(left: Any, right: Any) -> dict[str, list[str]]:
     return result
 
 
+def merge_thread_payload(primary: dict[str, Any], duplicate: dict[str, Any], *, primary_id: str) -> dict[str, Any]:
+    projects = projects_from_values(primary.get("projects"), primary.get("project"), duplicate.get("projects"), duplicate.get("project"))
+    return {
+        **primary,
+        "id": primary_id,
+        "title": str(primary.get("title") or duplicate.get("title") or "").strip(),
+        "project": project_display(projects),
+        "projects": projects,
+        "type": str(primary.get("type") or duplicate.get("type") or "direct"),
+        "status": normalize_thread_status(primary.get("status") or duplicate.get("status")),
+        "note": merge_notes(primary.get("note"), duplicate.get("note")),
+        "anchors": merge_anchors(primary.get("anchors"), duplicate.get("anchors")),
+        "created_at": earliest_text([primary.get("created_at"), duplicate.get("created_at")]) or str(primary.get("created_at") or duplicate.get("created_at") or now_iso()),
+        "updated_at": now_iso(),
+    }
+
+
+def find_requirement_id_by_title(threads: dict[str, dict[str, Any]], title: str) -> str:
+    target = normalize_requirement_title(title)
+    if not target:
+        return ""
+    for requirement_id, thread in threads.items():
+        if normalize_requirement_title(thread.get("title")) == target:
+            return requirement_id
+    return ""
+
+
+def normalize_requirement_title(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def merge_project_values(*values: Any) -> str:
+    return project_display(projects_from_values(*values))
+
+
+def projects_from_values(*values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, list):
+            raw_parts = value
+        else:
+            raw_parts = str(value or "").replace("，", ",").split(",")
+        for part in raw_parts:
+            text = part.strip()
+            if text and text != "unknown" and text not in result:
+                result.append(text)
+    return result
+
+
+def project_display(projects: list[str]) -> str:
+    return ", ".join(projects) if projects else "unknown"
+
+
+def thread_project_display(thread: dict[str, Any]) -> str:
+    return project_display(projects_from_values(thread.get("projects"), thread.get("project")))
+
+
+def merge_notes(*values: Any) -> str:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return "\n".join(result)
+
+
+def rewrite_requirement_references(storage: Any | None, *, primary: dict[str, Any], duplicate_ids: set[str]) -> None:
+    if not duplicate_ids:
+        return
+    if is_sqlite_storage(storage):
+        store = store_for(storage)
+        with store.connect() as conn:
+            for day, payload in store.load_all_daily_reviews(conn):
+                updated = rewrite_daily_requirement_references(payload, primary=primary, duplicate_ids=duplicate_ids)
+                if updated:
+                    store.save_daily_review(conn, day, payload)
+        return
+
+    paths = requirement_paths()
+    if not paths.daily_dir.exists():
+        return
+    for path in sorted(paths.daily_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if rewrite_daily_requirement_references(payload, primary=primary, duplicate_ids=duplicate_ids):
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def rewrite_daily_requirement_references(payload: dict[str, Any], *, primary: dict[str, Any], duplicate_ids: set[str]) -> bool:
+    changed = False
+    primary_id = str(primary.get("id") or "")
+    primary_title = str(primary.get("title") or "")
+    primary_project = str(primary.get("project") or "unknown")
+    primary_type = str(primary.get("type") or "direct")
+    for collection_name in ("assignments", "candidates"):
+        for item in payload.get(collection_name) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("requirement_id") or "") in duplicate_ids:
+                item["requirement_id"] = primary_id
+                item["title"] = primary_title
+                item["project"] = primary_project
+                item["requirement_type"] = primary_type
+                changed = True
+    if "requirements" in payload:
+        payload["requirements"] = [item for item in payload.get("requirements") or [] if str((item or {}).get("id") or "") not in duplicate_ids]
+        changed = True
+    if changed:
+        payload["updated_at"] = now_iso()
+    return changed
+
+
 def requirement_id_for(*, project: str, title: str) -> str:
-    slug = "".join(char.lower() if char.isalnum() else "-" for char in f"{project}-{title}")
+    slug = "".join(char.lower() if char.isalnum() else "-" for char in title)
     slug = "-".join(part for part in slug.split("-") if part)
     if slug:
         return "req_" + slug[:80]
-    digest = hashlib.sha1(f"{project}|{title}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(title.encode("utf-8")).hexdigest()[:12]
     return f"req_{digest}"
 
 

@@ -40,7 +40,7 @@ def build_config_payload(config_path: Path | None = None) -> dict[str, Any]:
             "vault_path": str(config.obsidian.vault_path) if config.obsidian.vault_path else "",
             "daily_dir": config.obsidian.daily_dir,
             "task_dir": config.obsidian.task_dir,
-            "write_task_notes": config.obsidian.write_task_notes,
+            "write_task_notes": True,
             "knowledge_dir": config.obsidian.knowledge_dir,
             "write_knowledge_notes": config.obsidian.write_knowledge_notes,
         },
@@ -120,7 +120,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
         obsidian_vault=obsidian_vault,
         daily_dir=daily_dir,
         task_dir=task_dir,
-        write_task_notes=bool(obsidian.get("write_task_notes", False)),
+        write_task_notes=True,
         knowledge_dir=knowledge_dir,
         write_knowledge_notes=bool(obsidian.get("write_knowledge_notes", False)),
         enable_ai=bool(ai.get("enabled", False)),
@@ -154,8 +154,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
     output_dir.mkdir(parents=True, exist_ok=True)
     if obsidian_vault:
         (obsidian_vault / daily_dir).mkdir(parents=True, exist_ok=True)
-        if bool(obsidian.get("write_task_notes", False)):
-            (obsidian_vault / task_dir).mkdir(parents=True, exist_ok=True)
+        (obsidian_vault / task_dir).mkdir(parents=True, exist_ok=True)
         if bool(obsidian.get("write_knowledge_notes", False)):
             (obsidian_vault / knowledge_dir).mkdir(parents=True, exist_ok=True)
 
