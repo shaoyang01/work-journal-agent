@@ -54,8 +54,8 @@ def install_interval_schedule(
     project_root: Path,
     every_minutes: int = 60,
     load: bool = True,
-    active_from: str | None = None,
-    active_to: str | None = None,
+    active_from: str | None = "08:00",
+    active_to: str | None = "21:00",
 ) -> ScheduleResult:
     if platform.system() != "Darwin":
         raise ValueError("automatic scheduling is currently implemented for macOS launchd only")

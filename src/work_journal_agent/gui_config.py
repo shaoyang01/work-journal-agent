@@ -136,7 +136,7 @@ def save_config_payload(payload: dict[str, Any], *, project_root: Path, config_p
         kun_project_root=kun_project_root,
         enable_zcode=bool(zcode.get("enabled", False)),
         zcode_storage_root=zcode_storage_root,
-        ai_model=str_value(ai.get("model"), "deepseek-v4-flash"),
+        ai_model=str_value(ai.get("model"), "deepseek-v4-pro"),
         ai_timeout_seconds=int_value(ai.get("timeout_seconds"), 180),
         ai_cache_enabled=bool(ai.get("cache_enabled", True)),
         ai_cache_retention_days=int_value(ai.get("cache_retention_days"), 7),

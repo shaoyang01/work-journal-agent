@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +75,18 @@ def render_task_brief(task: TaskSummary) -> str:
         f"- 项目：{project}",
         f"- 来源：{sources}",
         f"- 事件：{task.event_count} 条",
-        f"- 需求：{request}",
-        f"- 结论：{decision}",
-        f"- 产出：{files}",
-        f"- 后续：{next_step}",
     ]
+    duration = requirement_duration_label(task, day=task.day)
+    if duration:
+        lines.append(f"- 已进行：{duration}")
+    lines.extend(
+        [
+            f"- 需求：{request}",
+            f"- 结论：{decision}",
+            f"- 产出：{files}",
+            f"- 后续：{next_step}",
+        ]
+    )
     if task.ai_impact and task.ai_impact != "暂无明确影响":
         lines.append(f"- 影响：{task.ai_impact}")
     if task.ai_evidence:
@@ -88,6 +95,33 @@ def render_task_brief(task: TaskSummary) -> str:
         lines.append(f"- 产物路径：{compact_followup_items(task.ai_artifact_paths)}")
     lines.extend(render_followup_lines(task))
     return "\n".join(lines)
+
+
+def requirement_duration_label(task: TaskSummary, *, day: date) -> str:
+    if not task.requirement_created_at:
+        return ""
+    created_at = parse_datetime(task.requirement_created_at)
+    if not created_at:
+        return ""
+    if created_at.date() == day:
+        return "今天开始"
+    elapsed_days = max(1, (day - created_at.date()).days)
+    return f"{elapsed_days} 天"
+
+
+def parse_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def render_task(task: TaskSummary) -> str:

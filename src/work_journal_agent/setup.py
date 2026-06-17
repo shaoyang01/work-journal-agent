@@ -42,8 +42,8 @@ def run_interactive_setup(
     yes: bool = False,
     schedule: bool | None = None,
     every_minutes: int = 60,
-    active_from: str | None = None,
-    active_to: str | None = None,
+    active_from: str | None = "08:00",
+    active_to: str | None = "21:00",
 ) -> SetupResult:
     print("work-journal-agent 配置向导")
     print("接下来会生成本机配置，并可选配置 Claude Code hooks、OpenCode、Kun、ZCode 和后台自动写入器。")
@@ -251,7 +251,7 @@ def create_config(
     kun_project_root: Path | None = None,
     enable_zcode: bool = False,
     zcode_storage_root: Path | None = None,
-    ai_model: str = "deepseek-v4-flash",
+    ai_model: str = "deepseek-v4-pro",
     ai_timeout_seconds: int = 180,
     ai_cache_enabled: bool = True,
     ai_cache_retention_days: int = 7,
@@ -355,7 +355,7 @@ def upsert_ai_config(text: str, *, enabled: bool) -> str:
             f"enabled = {str(enabled).lower()}",
             'provider = "deepseek"',
             'base_url = "https://api.deepseek.com"',
-            'model = "deepseek-v4-flash"',
+            'model = "deepseek-v4-pro"',
             'api_key_env = "DEEPSEEK_API_KEY"',
             "timeout_seconds = 180",
             "cache_enabled = true",

@@ -7,12 +7,15 @@ import signal
 import threading
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
+from .ai_run_tracker import current_ai_run_id, finish_ai_task_item, start_ai_task_item
 from .ai_cache import (
     ai_result_from_task,
     apply_cached_result,
@@ -51,6 +54,22 @@ class KnowledgeNoteResult:
     used: bool
     topics: list[dict[str, Any]]
     message: str
+
+
+CLUSTER_REVIEW_CACHE_SCHEMA = 2
+CLUSTER_REVIEW_MAX_TASKS_PER_BATCH = 6
+CLUSTER_REVIEW_MAX_CONTEXT_CHARS = 10000
+CLUSTER_REVIEW_MAX_ROUNDS = 3
+CLUSTER_REVIEW_MAX_PARALLEL_CALLS = 4
+CLUSTER_REVIEW_CACHE_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class ClusterReviewStats:
+    calls: int = 0
+    cached: int = 0
+    failed: int = 0
+    rounds: int = 0
 
 
 def summarize_tasks(config: AppConfig, tasks: list[TaskSummary]) -> AiSummaryResult:
@@ -122,19 +141,101 @@ def review_task_clusters(config: AppConfig, tasks: list[TaskSummary]) -> Cluster
         return ClusterReviewResult(enabled=True, used=False, tasks=tasks, message="AI cluster review skipped")
 
     try:
-        review_context = cluster_review_context(tasks)
-        input_hash = context_hash({"tasks": review_context})
+        reviewed_tasks, stats = review_task_clusters_recursively(config, api_key, tasks)
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
+        return ClusterReviewResult(enabled=True, used=False, tasks=tasks, message=f"AI cluster review failed: {exc}")
+    if same_task_groups(tasks, reviewed_tasks):
+        if stats.failed and not stats.calls and not stats.cached:
+            return ClusterReviewResult(enabled=True, used=False, tasks=tasks, message=cluster_review_stats_message("failed", stats))
+        if stats.cached and not stats.calls:
+            return ClusterReviewResult(enabled=True, used=True, tasks=tasks, message="AI cluster review reused cached original groups")
+        return ClusterReviewResult(enabled=True, used=True, tasks=tasks, message=cluster_review_stats_message("kept original groups", stats))
+    if stats.cached and not stats.calls:
+        return ClusterReviewResult(
+            enabled=True,
+            used=True,
+            tasks=reviewed_tasks,
+            message=f"AI cluster review reused cached adjustment ({len(reviewed_tasks)} task group(s))",
+        )
+    return ClusterReviewResult(enabled=True, used=True, tasks=reviewed_tasks, message=cluster_review_stats_message(f"adjusted {len(reviewed_tasks)} task group(s)", stats))
+
+
+def review_task_clusters_recursively(config: AppConfig, api_key: str, tasks: list[TaskSummary]) -> tuple[list[TaskSummary], ClusterReviewStats]:
+    current = tasks
+    total_calls = 0
+    total_cached = 0
+    total_failed = 0
+    rounds = 0
+    run_id = current_ai_run_id()
+    for round_index in range(CLUSTER_REVIEW_MAX_ROUNDS):
+        batches = cluster_review_batches(current)
+        reviewed_batches: list[list[TaskSummary] | None] = [None] * len(batches)
+        round_calls = 0
+        round_cached = 0
+        round_failed = 0
+        with ThreadPoolExecutor(max_workers=CLUSTER_REVIEW_MAX_PARALLEL_CALLS) as executor:
+            futures = {
+                executor.submit(review_task_cluster_batch, config, api_key, batch, round_index=round_index, batch_index=index, run_id=run_id): index
+                for index, batch in enumerate(batches)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    reviewed, cached = future.result()
+                except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
+                    reviewed_batches[index] = batches[index]
+                    round_failed += 1
+                    continue
+                reviewed_batches[index] = reviewed
+                if cached:
+                    round_cached += 1
+                else:
+                    round_calls += 1
+        next_tasks = [task for batch in reviewed_batches if batch for task in batch]
+        next_tasks = sort_tasks(next_tasks)
+        total_calls += round_calls
+        total_cached += round_cached
+        total_failed += round_failed
+        rounds = round_index + 1
+        if same_task_groups(current, next_tasks):
+            break
+        current = next_tasks
+        if len(current) <= 1:
+            break
+    return current, ClusterReviewStats(calls=total_calls, cached=total_cached, failed=total_failed, rounds=rounds)
+
+
+def review_task_cluster_batch(
+    config: AppConfig,
+    api_key: str,
+    tasks: list[TaskSummary],
+    *,
+    round_index: int,
+    batch_index: int | None = None,
+    run_id: str | None = None,
+) -> tuple[list[TaskSummary], bool]:
+    review_context = cluster_review_context(tasks)
+    input_hash = context_hash({"schema": CLUSTER_REVIEW_CACHE_SCHEMA, "round": round_index, "tasks": review_context})
+    item_id, started = start_ai_task_item(
+        config,
+        run_id=run_id,
+        phase="cluster",
+        stage=f"round_{round_index + 1}",
+        batch_index=batch_index,
+        input_hash=input_hash,
+        metadata={
+            "round": round_index + 1,
+            "task_count": len(tasks),
+            "event_count": sum(task.event_count for task in tasks),
+            "context_chars": len(json.dumps(review_context, ensure_ascii=False)),
+        },
+    )
+    try:
         cached_payload = load_cluster_review_cache(config, tasks, input_hash)
         if cached_payload is not None:
-            reviewed_tasks = apply_cluster_review_payload(tasks, cached_payload, min_confidence=config.ai.cluster_review_min_confidence)
-            if same_task_groups(tasks, reviewed_tasks):
-                return ClusterReviewResult(enabled=True, used=True, tasks=tasks, message="AI cluster review reused cached original groups")
-            return ClusterReviewResult(
-                enabled=True,
-                used=True,
-                tasks=reviewed_tasks,
-                message=f"AI cluster review reused cached adjustment ({len(reviewed_tasks)} task group(s))",
-            )
+            reviewed = apply_cluster_review_payload(tasks, cached_payload, min_confidence=config.ai.cluster_review_min_confidence)
+            finish_ai_task_item(config, item_id, started, status="cached", result=cluster_item_result(cached_payload, reviewed))
+            return reviewed, True
         payload = call_deepseek_for_prompt(
             config,
             api_key,
@@ -142,18 +243,60 @@ def review_task_clusters(config: AppConfig, tasks: list[TaskSummary]) -> Cluster
             timeout_seconds=config.ai.cluster_review_timeout_seconds,
         )
         save_cluster_review_cache(config, tasks, input_hash, payload)
-        reviewed_tasks = apply_cluster_review_payload(tasks, payload, min_confidence=config.ai.cluster_review_min_confidence)
-    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
-        return ClusterReviewResult(enabled=True, used=False, tasks=tasks, message=f"AI cluster review failed: {exc}")
-    if same_task_groups(tasks, reviewed_tasks):
-        return ClusterReviewResult(enabled=True, used=True, tasks=tasks, message="AI cluster review kept original groups")
-    return ClusterReviewResult(enabled=True, used=True, tasks=reviewed_tasks, message=f"AI cluster review adjusted {len(reviewed_tasks)} task group(s)")
+        reviewed = apply_cluster_review_payload(tasks, payload, min_confidence=config.ai.cluster_review_min_confidence)
+        finish_ai_task_item(config, item_id, started, status="succeeded", result=cluster_item_result(payload, reviewed))
+        return reviewed, False
+    except Exception as exc:
+        finish_ai_task_item(config, item_id, started, status="failed", error_message=str(exc))
+        raise
+
+
+def cluster_review_batches(tasks: list[TaskSummary]) -> list[list[TaskSummary]]:
+    batches: list[list[TaskSummary]] = []
+    batch: list[TaskSummary] = []
+    batch_chars = 0
+    for task in sort_tasks(tasks):
+        task_chars = len(json.dumps(cluster_review_context([task]), ensure_ascii=False))
+        if batch and (len(batch) >= CLUSTER_REVIEW_MAX_TASKS_PER_BATCH or batch_chars + task_chars > CLUSTER_REVIEW_MAX_CONTEXT_CHARS):
+            batches.append(batch)
+            batch = []
+            batch_chars = 0
+        batch.append(task)
+        batch_chars += task_chars
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def cluster_item_result(payload: Any, reviewed: list[TaskSummary]) -> dict[str, Any]:
+    groups = payload.get("groups") if isinstance(payload, dict) and isinstance(payload.get("groups"), list) else []
+    return {
+        "group_count": len(groups),
+        "reviewed_task_count": len(reviewed),
+        "reviewed_event_count": sum(task.event_count for task in reviewed),
+        "titles": compact_items([task.ai_title or task.title for task in reviewed], limit=6, char_limit=80),
+    }
+
+
+def sort_tasks(tasks: list[TaskSummary]) -> list[TaskSummary]:
+    return sorted(tasks, key=lambda task: min((event.occurred_at for event in task.events), default=None))
+
+
+def cluster_review_stats_message(action: str, stats: ClusterReviewStats) -> str:
+    detail = f"{stats.rounds} round(s), {stats.calls} call(s)"
+    if stats.cached:
+        detail += f", {stats.cached} cached batch(es)"
+    if stats.failed:
+        detail += f", {stats.failed} failed batch(es) kept original"
+    return f"AI cluster review {action} ({detail})"
 
 
 def needs_cluster_review(tasks: list[TaskSummary]) -> bool:
     meaningful = [task for task in tasks if task.event_count > 0]
     if not meaningful:
         return False
+    if len(meaningful) > 1:
+        return True
 
     tasks_by_repo: dict[str, int] = {}
     for task in meaningful:
@@ -704,9 +847,7 @@ def load_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input
         store = store_for(config.storage)
         with store.connect() as conn:
             payload = store.load_ai_cache(conn, "cluster-review", tasks[0].day)
-        if not isinstance(payload, dict) or payload.get("input_hash") != input_hash:
-            return None
-        return payload.get("review")
+        return cached_cluster_review_item(payload, input_hash)
     path = cluster_review_cache_path(config, tasks)
     if not path.exists():
         return None
@@ -714,55 +855,82 @@ def load_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("input_hash") != input_hash:
-        return None
-    return payload.get("review")
+    return cached_cluster_review_item(payload, input_hash)
 
 
 def save_cluster_review_cache(config: AppConfig, tasks: list[TaskSummary], input_hash: str, review: Any) -> None:
     if not config.ai.cache_enabled:
         return
+    with CLUSTER_REVIEW_CACHE_LOCK:
+        payload = load_cluster_review_day_cache(config, tasks[0].day)
+        items = payload.setdefault("items", {})
+        if isinstance(items, dict):
+            items[input_hash] = review
+        payload["schema_version"] = CLUSTER_REVIEW_CACHE_SCHEMA
+        payload["date"] = tasks[0].day.isoformat()
+        if is_sqlite_storage(config.storage):
+            store = store_for(config.storage)
+            with store.connect() as conn:
+                store.save_ai_cache(conn, "cluster-review", tasks[0].day, payload)
+            prune_cache(config.storage, keep_days=config.ai.cache_retention_days, today=tasks[0].day, namespace="cluster-review")
+            return
+        path = cluster_review_cache_path(config, tasks)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        prune_cache(path.parent, keep_days=config.ai.cache_retention_days, today=tasks[0].day)
+
+
+def cached_cluster_review_item(payload: Any, input_hash: str) -> Any | None:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("input_hash") == input_hash:
+        return payload.get("review")
+    items = payload.get("items")
+    if isinstance(items, dict) and input_hash in items:
+        return items[input_hash]
+    return None
+
+
+def load_cluster_review_day_cache(config: AppConfig, day: date) -> dict[str, Any]:
     if is_sqlite_storage(config.storage):
-        payload = {
-            "date": tasks[0].day.isoformat(),
-            "input_hash": input_hash,
-            "review": review,
-        }
         store = store_for(config.storage)
         with store.connect() as conn:
-            store.save_ai_cache(conn, "cluster-review", tasks[0].day, payload)
-        prune_cache(config.storage, keep_days=config.ai.cache_retention_days, today=tasks[0].day, namespace="cluster-review")
-        return
-    path = cluster_review_cache_path(config, tasks)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "date": tasks[0].day.isoformat(),
-        "input_hash": input_hash,
-        "review": review,
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    prune_cache(path.parent, keep_days=config.ai.cache_retention_days, today=tasks[0].day)
+            payload = store.load_ai_cache(conn, "cluster-review", day)
+    else:
+        path = config.ai.cache_dir / "cluster-review" / f"{day.isoformat()}.json"
+        if not path.exists():
+            payload = {}
+        else:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+    if isinstance(payload, dict) and payload.get("schema_version") == CLUSTER_REVIEW_CACHE_SCHEMA and isinstance(payload.get("items"), dict):
+        return payload
+    return {"schema_version": CLUSTER_REVIEW_CACHE_SCHEMA, "date": day.isoformat(), "items": {}}
 
 
-def cluster_review_context(tasks: list[TaskSummary]) -> list[dict[str, Any]]:
+def cluster_review_context(tasks: list[TaskSummary], *, include_events: bool = False) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for task in tasks:
-        result.append(
-            {
-                "key": task.key,
-                "title": task.title,
-                "project": repo_identity(task.cwd),
-                "sources": sorted(task.sources),
-                "event_count": task.event_count,
-                "event_ids": sorted(task.event_ids),
-                "session_ids": sorted(task.session_ids),
-                "branches": sorted(task.branches),
-                "files": compact_items(relative_files(task), limit=8, char_limit=140),
-                "primary_request": first_meaningful(task.raw_requests, char_limit=260),
-                "recent_decisions": select_latest_meaningful(task.decisions, limit=2, char_limit=180),
-                "events": [event_review_context(event) for event in cluster_review_events(task)],
-            }
-        )
+        item = {
+            "key": task.key,
+            "title": task.ai_title or task.title,
+            "project": repo_identity(task.cwd),
+            "sources": sorted(task.sources),
+            "event_count": task.event_count,
+            "event_ids": sorted(task.event_ids),
+            "session_count": len(task.session_ids),
+            "branches": sorted(task.branches)[:6],
+            "files": compact_items(relative_files(task), limit=5, char_limit=100),
+            "primary_request": task.ai_request or first_meaningful(task.raw_requests, char_limit=220),
+            "recent_decisions": compact_items([task.ai_decision] if task.ai_decision else [], limit=1, char_limit=160)
+            or select_latest_meaningful(task.decisions, limit=1, char_limit=160),
+            "evidence": compact_items(task.ai_evidence, limit=4, char_limit=120),
+        }
+        if include_events:
+            item["events"] = [event_review_context(event) for event in cluster_review_events(task)]
+        result.append(item)
     return result
 
 
@@ -861,13 +1029,14 @@ def same_task_groups(left: list[TaskSummary], right: list[TaskSummary]) -> bool:
 def task_context(task: TaskSummary) -> dict[str, Any]:
     return {
         "key": task.key,
-        "title": task.title,
+        "title": task.ai_title or task.title,
         "project": repo_identity(task.cwd),
         "sources": sorted(task.sources),
         "event_count": task.event_count,
-        "original_request": first_meaningful(task.raw_requests, char_limit=900),
+        "original_request": task.ai_request or first_meaningful(task.raw_requests, char_limit=900),
         "additional_requests": select_meaningful(task.raw_requests[1:], limit=3, char_limit=320),
-        "latest_decisions": select_latest_meaningful(task.decisions, limit=4, char_limit=520),
+        "latest_decisions": compact_items([task.ai_decision] if task.ai_decision else [], limit=1, char_limit=520)
+        or select_latest_meaningful(task.decisions, limit=4, char_limit=520),
         "process_evidence": select_meaningful(task.discussions, limit=3, char_limit=180),
         "files": compact_items(relative_files(task), limit=10, char_limit=160),
     }
