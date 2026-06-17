@@ -74,7 +74,7 @@ def run_interactive_setup(
     obsidian_vault = expand_path(vault_text) if vault_text.strip() else None
     daily_dir = ask_text("Daily 笔记目录名", "Daily", yes=yes)
     task_dir = ask_text("独立任务笔记目录名", "Tasks", yes=yes)
-    write_task_notes = ask_bool("是否额外生成独立任务笔记", False, yes=yes)
+    write_task_notes = True
     knowledge_dir = ask_text("知识专题笔记目录名", "Knowledge", yes=yes)
     write_knowledge_notes = ask_bool("是否允许写入 Knowledge 笔记（实验功能，默认关闭）", False, yes=yes)
     enable_ai = ask_bool("是否启用 DeepSeek AI 分析，让它帮助整理每日工作摘要", False, yes=yes)
@@ -157,8 +157,7 @@ def run_interactive_setup(
     output_dir.mkdir(parents=True, exist_ok=True)
     if obsidian_vault:
         (obsidian_vault / daily_dir).mkdir(parents=True, exist_ok=True)
-        if write_task_notes:
-            (obsidian_vault / task_dir).mkdir(parents=True, exist_ok=True)
+        (obsidian_vault / task_dir).mkdir(parents=True, exist_ok=True)
         if write_knowledge_notes:
             (obsidian_vault / knowledge_dir).mkdir(parents=True, exist_ok=True)
 
@@ -279,7 +278,7 @@ def create_config(
             f'vault_path = "{toml_string(obsidian_vault) if obsidian_vault else ""}"',
             f'daily_dir = "{toml_string(daily_dir)}"',
             f'task_dir = "{toml_string(task_dir)}"',
-            f"write_task_notes = {str(write_task_notes).lower()}",
+            "write_task_notes = true",
             f'knowledge_dir = "{toml_string(knowledge_dir)}"',
             f"write_knowledge_notes = {str(write_knowledge_notes).lower()}",
             "",

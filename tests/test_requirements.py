@@ -23,7 +23,7 @@ from work_journal_agent.config import (
 from work_journal_agent.event_semantics import SemanticSummaryResult
 from work_journal_agent.events import WorkEvent, append_event
 from work_journal_agent.merge import group_events
-from work_journal_agent.requirements import apply_requirement_assignments, build_requirement_management_payload, build_review_payload, filter_ignored_events, load_daily_review, load_review_payload, load_threads, merge_confirmed_requirement_tasks, save_requirement_threads, save_review_decisions
+from work_journal_agent.requirements import apply_requirement_assignments, build_requirement_management_payload, build_review_payload, filter_ignored_events, load_daily_review, load_review_payload, load_threads, merge_confirmed_requirement_tasks, merge_requirement_threads, save_requirement_threads, save_review_decisions
 
 
 class RequirementReviewTests(unittest.TestCase):
@@ -314,6 +314,142 @@ class RequirementReviewTests(unittest.TestCase):
                 self.assertEqual(requirement["created_at"], created_at)
                 self.assertEqual(build_requirement_management_payload(config)["summary"]["completed"], 1)
                 self.assertEqual(review_payload["requirements"], [])
+            finally:
+                restore_env("XDG_DATA_HOME", old_data_home)
+
+    def test_same_requirement_title_is_single_thread_across_projects(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            old_data_home = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(base / "data")
+            try:
+                config = test_config(base)
+
+                save_review_decisions(
+                    date(2026, 6, 12),
+                    [
+                        {
+                            "candidate_id": "cand_tms",
+                            "title": "鲜猪肉质检计薪",
+                            "project": "tms-flink-finance",
+                            "requirement_type": "review",
+                            "status": "confirmed",
+                            "event_ids": ["e1"],
+                        },
+                        {
+                            "candidate_id": "cand_pfms",
+                            "title": "鲜猪肉质检计薪",
+                            "project": "pfms",
+                            "requirement_type": "review",
+                            "status": "confirmed",
+                            "event_ids": ["e2"],
+                        },
+                    ],
+                    config=config,
+                )
+
+                threads = load_threads(storage=config.storage)
+                saved_daily = load_daily_review(date(2026, 6, 12), storage=config.storage)
+                requirement_ids = {assignment["requirement_id"] for assignment in saved_daily["assignments"]}
+
+                self.assertEqual(len(threads), 1)
+                self.assertEqual(requirement_ids, set(threads))
+                requirement = next(iter(threads.values()))
+                self.assertEqual(requirement["title"], "鲜猪肉质检计薪")
+                self.assertEqual(requirement["project"], "tms-flink-finance, pfms")
+            finally:
+                restore_env("XDG_DATA_HOME", old_data_home)
+
+    def test_requirement_project_is_derived_from_candidate_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            old_data_home = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(base / "data")
+            try:
+                config = test_config(base)
+                work_event = event("e1", "实现 PFMS 文档治理", raw_request="实现 PFMS 文档治理", cwd="/repo/pfms")
+                append_event(config.storage.inbox_path, work_event)
+                payload = build_review_payload(config, date(2026, 6, 12))
+                candidate = payload["candidates"][0]
+
+                save_review_decisions(
+                    date(2026, 6, 12),
+                    [
+                        {
+                            "candidate_id": candidate["candidate_id"],
+                            "title": "鲜猪肉质检计薪",
+                            "project": "用户不应手动决定的项目",
+                            "requirement_type": "review",
+                            "status": "confirmed",
+                            "event_ids": [work_event.id],
+                        }
+                    ],
+                    config=config,
+                )
+
+                requirement = next(iter(load_threads(storage=config.storage).values()))
+
+                self.assertEqual(requirement["project"], "pfms")
+                self.assertEqual(requirement["projects"], ["pfms"])
+            finally:
+                restore_env("XDG_DATA_HOME", old_data_home)
+
+    def test_requirement_merge_rewrites_existing_daily_assignments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            old_data_home = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(base / "data")
+            try:
+                config = test_config(base)
+
+                save_review_decisions(
+                    date(2026, 6, 12),
+                    [
+                        {
+                            "candidate_id": "cand_primary",
+                            "title": "目视分拣计薪二期",
+                            "project": "tms-flink-finance",
+                            "requirement_type": "direct",
+                            "status": "confirmed",
+                            "event_ids": ["e1"],
+                            "anchors": {"implementation_files": ["VisualSortingEtl.java"]},
+                        }
+                    ],
+                    config=config,
+                )
+                save_review_decisions(
+                    date(2026, 6, 13),
+                    [
+                        {
+                            "candidate_id": "cand_duplicate",
+                            "title": "生产力目视分拣计薪二期",
+                            "project": "tms-flink-finance",
+                            "requirement_type": "direct",
+                            "status": "confirmed",
+                            "event_ids": ["e2"],
+                            "anchors": {"implementation_files": ["VisualSortingPrice.java"]},
+                        }
+                    ],
+                    config=config,
+                )
+                threads = load_threads(storage=config.storage)
+                primary_id = next(requirement_id for requirement_id, thread in threads.items() if thread["title"] == "目视分拣计薪二期")
+                duplicate_id = next(requirement_id for requirement_id, thread in threads.items() if thread["title"] == "生产力目视分拣计薪二期")
+
+                merge_requirement_threads(primary_id, [duplicate_id], config=config)
+
+                threads = load_threads(storage=config.storage)
+                first_daily = load_daily_review(date(2026, 6, 12), storage=config.storage)
+                second_daily = load_daily_review(date(2026, 6, 13), storage=config.storage)
+
+                self.assertEqual(set(threads), {primary_id})
+                self.assertEqual(first_daily["assignments"][0]["requirement_id"], primary_id)
+                self.assertEqual(second_daily["assignments"][0]["requirement_id"], primary_id)
+                self.assertEqual(second_daily["assignments"][0]["title"], "目视分拣计薪二期")
+                self.assertEqual(
+                    threads[primary_id]["anchors"]["implementation_files"],
+                    ["VisualSortingEtl.java", "VisualSortingPrice.java"],
+                )
             finally:
                 restore_env("XDG_DATA_HOME", old_data_home)
 

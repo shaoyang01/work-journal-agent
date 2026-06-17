@@ -24,20 +24,21 @@ def write_daily(
     daily_dir.mkdir(parents=True, exist_ok=True)
     target = daily_dir / f"{day.isoformat()}.md"
     if write_daily_note:
-        target.write_text(render_daily(day, tasks), encoding="utf-8")
+        target.write_text(render_daily(day, tasks, task_dir=config.obsidian.task_dir), encoding="utf-8")
 
-    if write_daily_note and config.obsidian.write_task_notes:
+    if write_daily_note:
         task_dir = base / config.obsidian.task_dir
-        task_dir.mkdir(parents=True, exist_ok=True)
+        task_day_dir = task_dir / day.isoformat()
+        task_day_dir.mkdir(parents=True, exist_ok=True)
         for task in tasks:
-            task_target = task_dir / f"{day.isoformat()}-{slugify(display_title(task))}.md"
-            task_target.write_text(render_task(task), encoding="utf-8")
+            task_target = task_day_dir / task_note_filename(task)
+            task_target.write_text(render_task(task, day=day, daily_dir=config.obsidian.daily_dir), encoding="utf-8")
     if write_knowledge and config.obsidian.write_knowledge_notes:
         write_knowledge_topic_notes(config, day, tasks, topics=knowledge_topics)
     return target
 
 
-def render_daily(day: date, tasks: list[TaskSummary]) -> str:
+def render_daily(day: date, tasks: list[TaskSummary], *, task_dir: str = "Tasks") -> str:
     tasks = [task for task in tasks if not is_noise_task(task)]
     lines = [
         "---",
@@ -45,20 +46,67 @@ def render_daily(day: date, tasks: list[TaskSummary]) -> str:
         "type: daily-work-journal",
         "---",
         "",
-        f"# {day.isoformat()} 工作记录",
+        f"# 工作日报｜{day.isoformat()}",
         "",
     ]
     if not tasks:
         lines.extend(["今天没有可归档的工作事件。", ""])
         return "\n".join(lines)
 
-    lines.extend(["## 今日概览", ""])
+    projects = unique([repo_identity(task.cwd) or "unknown" for task in tasks])
+    sources = unique([source for task in tasks for source in sorted(task.sources)])
+    status = daily_status(tasks)
+    lines.extend(
+        [
+            "## 一、今日概览",
+            "",
+            "| 指标 | 内容 |",
+            "| --- | --- |",
+            f"| 需求事项 | {len(tasks)} 项 |",
+            f"| 涉及项目 | {join_or_fallback(projects)} |",
+            f"| 数据来源 | {join_or_fallback(sources)} |",
+            f"| 整体状态 | {status} |",
+            "",
+            "## 二、需求列表",
+            "",
+            "| 需求 | 项目 | 状态 | 事件数 | 责任方 | 今日摘要 |",
+            "| --- | --- | --- | ---: | --- | --- |",
+        ]
+    )
     for task in tasks:
-        lines.append(f"- **{display_title(task)}**（{repo_identity(task.cwd) or 'unknown'}，{', '.join(sorted(task.sources)) or 'unknown'}）")
-    lines.extend(["", "## 任务详情", ""])
-    for task in tasks:
-        lines.extend(render_task_brief(task).splitlines())
-        lines.append("")
+        cells = [
+            task_wiki_link(day, task, task_dir=task_dir, table=True),
+            table_cell(repo_identity(task.cwd) or "unknown"),
+            table_cell(task_status(task)),
+            str(task.event_count),
+            table_cell(task_owner(task)),
+            table_cell(task_daily_summary(task)),
+        ]
+        lines.append(f"| {' | '.join(cells)} |")
+    risk_rows = render_daily_risk_rows(day, tasks, task_dir=task_dir)
+    if risk_rows:
+        lines.extend(
+            [
+                "",
+                "## 三、风险与阻塞",
+                "",
+                "| 类型 | 内容 | 关联需求 |",
+                "| --- | --- | --- |",
+                *risk_rows,
+            ]
+        )
+    plan_rows = render_daily_plan_rows(day, tasks, task_dir=task_dir)
+    if plan_rows:
+        lines.extend(
+            [
+                "",
+                "## 四、明日计划",
+                "",
+                "| 优先级 | 计划 | 关联需求 |",
+                "| --- | --- | --- |",
+                *plan_rows,
+            ]
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -124,38 +172,87 @@ def parse_datetime(value: str) -> datetime | None:
     return parsed
 
 
-def render_task(task: TaskSummary) -> str:
+def render_task(task: TaskSummary, *, day: date | None = None, daily_dir: str = "Daily") -> str:
     sources = ", ".join(sorted(task.sources)) or "unknown"
     project = repo_identity(task.cwd) or "unknown"
+    task_day = day or task.day
     lines = [
-        f"## {display_title(task)}",
+        "---",
+        f"date: {task_day.isoformat()}",
+        "type: work-task-detail",
+        f"project: {project}",
+        f"status: {task_status(task)}",
+        f"owner: {task_owner(task)}",
+        "sources:",
+        *[f"  - {source}" for source in sorted(task.sources)],
+        f"event_count: {task.event_count}",
+        "---",
         "",
-        f"来源：{sources}",
-        f"项目：{project}",
-        f"事件数：{task.event_count}",
+        f"# {display_title(task)}",
         "",
-        "### 原始需求",
+        "| 字段 | 内容 |",
+        "| --- | --- |",
+        f"| 日期 | {task_day.isoformat()} |",
+        f"| 项目 | {table_cell(project)} |",
+        f"| 来源 | {table_cell(sources)} |",
+        f"| 事件数 | {task.event_count} 条 |",
+        f"| 状态 | {table_cell(task_status(task))} |",
+        f"| 责任方 | {table_cell(task_owner(task))} |",
+        f"| 所属日报 | {daily_wiki_link(task_day, daily_dir=daily_dir, table=True)} |",
+        "",
+        "## 需求背景",
     ]
-    lines.extend(bullets(compact_items(task.raw_requests, limit=3), fallback="未记录明确原始需求。"))
-    lines.extend(["", "### 关键过程"])
-    lines.extend(bullets(compact_items(task.discussions, limit=3), fallback="未记录关键过程。"))
-    lines.extend(["", "### 最终结论"])
-    lines.extend(bullets(compact_items(task.decisions, limit=3), fallback="暂无明确结论。"))
-    lines.extend(["", "### 重要产出"])
+    duration = requirement_duration_label(task, day=task_day)
+    if duration:
+        lines.insert(-2, f"| 已进行 | {duration} |")
+    lines.extend(task_background_lines(task))
+    lines.extend(["", "## 今日进展"])
+    lines.extend(task_progress_lines(task))
+    lines.extend(["", "## 当前结论"])
+    lines.extend(task_conclusion_lines(task))
+    lines.extend(["", "## 今日产出"])
     lines.extend(bullets(compact_items(task.ai_deliverables or task.ai_outputs, limit=5, char_limit=160), fallback=compact_files(task)))
     if task.ai_impact and task.ai_impact != "暂无明确影响":
-        lines.extend(["", "### 影响"])
+        lines.extend(["", "## 影响范围"])
         lines.append(task.ai_impact)
     if task.ai_evidence:
-        lines.extend(["", "### 证据"])
+        lines.extend(["", "## 证据依据"])
         lines.extend(bullets(compact_items(task.ai_evidence, limit=5, char_limit=160), fallback="暂无证据记录。"))
     if task.ai_artifact_paths:
-        lines.extend(["", "### 产物路径"])
+        lines.extend(["", "## 产物路径"])
         lines.extend(bullets(compact_items(task.ai_artifact_paths, limit=8, char_limit=160), fallback="暂无产物路径记录。"))
-    lines.extend(["", "### 后续"])
+    lines.extend(["", "## 后续动作"])
     followups = render_task_followup_bullets(task)
     lines.extend(followups if followups else ["- 待确认。"])
     return "\n".join(lines)
+
+
+def task_background_lines(task: TaskSummary) -> list[str]:
+    if task.ai_request:
+        return [task.ai_request]
+    structured_context = compact_items(
+        [*task.ai_deliverables, *task.ai_outputs, task.ai_impact or "", task.ai_decision or ""],
+        limit=1,
+        char_limit=140,
+    )
+    if structured_context:
+        return [f"围绕“{display_title(task)}”开展工作，重点是{structured_context[0]}。"]
+    return bullets(compact_meaningful_items(task.raw_requests, limit=2), fallback="未记录明确原始需求。")
+
+
+def task_progress_lines(task: TaskSummary) -> list[str]:
+    progress = task.ai_deliverables or task.ai_outputs
+    if progress:
+        return bullets(compact_items(progress, limit=5, char_limit=160), fallback="未记录关键进展。")
+    if task.ai_decision:
+        return [task.ai_decision]
+    return bullets(compact_meaningful_items(task.discussions, limit=3), fallback="未记录关键过程。")
+
+
+def task_conclusion_lines(task: TaskSummary) -> list[str]:
+    if task.ai_decision:
+        return [task.ai_decision]
+    return bullets(compact_meaningful_items(task.decisions, limit=3), fallback="暂无明确结论。")
 
 
 def bullets(items: list[str], *, fallback: str) -> list[str]:
@@ -187,6 +284,11 @@ def compact_items(items: list[str], *, limit: int = 5, char_limit: int = 260) ->
     if remaining > 0:
         compacted.append(f"另有 {remaining} 条已折叠。")
     return compacted
+
+
+def compact_meaningful_items(items: list[str], *, limit: int = 5, char_limit: int = 260) -> list[str]:
+    meaningful = [item for item in items if not is_template_noise_item(item)]
+    return compact_items(meaningful, limit=limit, char_limit=char_limit)
 
 
 def first_compact(items: list[str], *, fallback: str, char_limit: int = 120) -> str:
@@ -239,6 +341,94 @@ def compact_ai_outputs(task: TaskSummary) -> str:
 def compact_deliverables(task: TaskSummary) -> str:
     shown = compact_items(task.ai_deliverables or task.ai_outputs, limit=3, char_limit=90)
     return "；".join(shown) if shown else compact_files(task)
+
+
+def task_note_filename(task: TaskSummary) -> str:
+    return f"{slugify(display_title(task))}.md"
+
+
+def task_wiki_link(day: date, task: TaskSummary, *, task_dir: str, table: bool = False) -> str:
+    stem = task_note_filename(task)[:-3]
+    return wiki_link(f"{task_dir}/{day.isoformat()}/{stem}", display_title(task), table=table)
+
+
+def daily_wiki_link(day: date, *, daily_dir: str, table: bool = False) -> str:
+    return wiki_link(f"{daily_dir}/{day.isoformat()}", f"{day.isoformat()} 工作日报", table=table)
+
+
+def wiki_link(target: str, alias: str, *, table: bool = False) -> str:
+    separator = r"\|" if table else "|"
+    return f"[[{target}{separator}{alias}]]"
+
+
+def table_cell(value: object) -> str:
+    return str(value or "暂无").replace("\n", " ").replace("|", r"\|").strip() or "暂无"
+
+
+def join_or_fallback(values: list[str], *, fallback: str = "暂无") -> str:
+    return "、".join(values) if values else fallback
+
+
+def daily_status(tasks: list[TaskSummary]) -> str:
+    if any(task.ai_blockers for task in tasks):
+        return "存在阻塞"
+    if any(task.ai_questions for task in tasks):
+        return "有待确认事项"
+    if any(task.ai_validation_gaps for task in tasks):
+        return "有验证缺口"
+    return "正常推进"
+
+
+def task_status(task: TaskSummary) -> str:
+    if task.ai_blockers:
+        return "有阻塞"
+    if task.ai_questions:
+        return "待确认"
+    if task.ai_validation_gaps:
+        return "待验证"
+    if task.ai_next_actions:
+        return "待跟进"
+    if task.ai_deliverables or task.ai_outputs or task.decisions:
+        return "已记录"
+    return "待确认"
+
+
+def task_owner(task: TaskSummary) -> str:
+    owner = (task.ai_owner_hint or "").strip()
+    return owner if owner and owner != "none" else "暂无"
+
+
+def task_daily_summary(task: TaskSummary) -> str:
+    summary = task.ai_decision or compact_decision(task.decisions)
+    if summary == "暂无明确结论。":
+        summary = task.ai_request or first_compact(task.raw_requests, fallback="暂无明确摘要。")
+    return truncate_item(summary, 90)
+
+
+def render_daily_risk_rows(day: date, tasks: list[TaskSummary], *, task_dir: str) -> list[str]:
+    rows: list[str] = []
+    for task in tasks:
+        link = task_wiki_link(day, task, task_dir=task_dir, table=True)
+        for blocker in compact_items(task.ai_blockers, limit=3, char_limit=100):
+            rows.append(f"| 阻塞 | {table_cell(blocker)} | {link} |")
+        for question in compact_items(task.ai_questions, limit=3, char_limit=100):
+            rows.append(f"| 待确认 | {table_cell(question)} | {link} |")
+        for gap in compact_items(task.ai_validation_gaps, limit=3, char_limit=100):
+            rows.append(f"| 验证缺口 | {table_cell(gap)} | {link} |")
+    return rows
+
+
+def render_daily_plan_rows(day: date, tasks: list[TaskSummary], *, task_dir: str) -> list[str]:
+    rows: list[str] = []
+    for task in tasks:
+        actions = compact_items(task.ai_next_actions, limit=3, char_limit=100)
+        if not actions and task.ai_next:
+            actions = compact_items([task.ai_next], limit=1, char_limit=100)
+        link = task_wiki_link(day, task, task_dir=task_dir, table=True)
+        for index, action in enumerate(actions):
+            priority = "P0" if task.ai_blockers or task.ai_questions else ("P1" if index == 0 else "P2")
+            rows.append(f"| {priority} | {table_cell(action)} | {link} |")
+    return rows
 
 
 def write_knowledge_topic_notes(config: AppConfig, day: date, tasks: list[TaskSummary], *, topics: list[dict[str, Any]] | None = None) -> list[Path]:
@@ -518,6 +708,22 @@ def is_noise_item(value: str) -> bool:
         "Claude 事件：Stop",
         "Codex 事件：Stop",
     }
+
+
+def is_template_noise_item(value: str) -> bool:
+    stripped = " ".join(value.strip().split())
+    lowered = stripped.lower()
+    if is_noise_item(stripped):
+        return True
+    if not stripped:
+        return True
+    if stripped.startswith(("ZCode 执行工具：", "Codex 执行工具：", "Claude 执行工具：")):
+        return True
+    if lowered.startswith("this session is being continued from a previous conversation"):
+        return True
+    if lowered.startswith("we need continue from summary"):
+        return True
+    return False
 
 
 def is_noise_task(task: TaskSummary) -> bool:

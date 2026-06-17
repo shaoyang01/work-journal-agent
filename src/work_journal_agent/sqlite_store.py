@@ -302,6 +302,17 @@ class WorkJournalStore:
         row = conn.execute("SELECT payload_json FROM requirement_daily WHERE day = ?", (day.isoformat(),)).fetchone()
         return json_dict(row["payload_json"]) if row else {}
 
+    def load_all_daily_reviews(self, conn: sqlite3.Connection) -> list[tuple[date, dict[str, Any]]]:
+        rows = conn.execute("SELECT day, payload_json FROM requirement_daily ORDER BY day").fetchall()
+        result: list[tuple[date, dict[str, Any]]] = []
+        for row in rows:
+            try:
+                day = date.fromisoformat(str(row["day"]))
+            except ValueError:
+                continue
+            result.append((day, json_dict(row["payload_json"])))
+        return result
+
     def save_daily_review(self, conn: sqlite3.Connection, day: date, payload: dict[str, Any]) -> bool:
         if self.payload_matches(conn, "requirement_daily", "day", day.isoformat(), payload):
             return False
@@ -314,6 +325,9 @@ class WorkJournalStore:
             ),
         )
         return True
+
+    def delete_requirement_thread(self, conn: sqlite3.Connection, requirement_id: str) -> None:
+        conn.execute("DELETE FROM requirement_threads WHERE id = ?", (requirement_id,))
 
     def load_status(self, conn: sqlite3.Connection) -> dict[str, Any]:
         row = conn.execute("SELECT payload_json FROM app_status WHERE key = 'current'").fetchone()

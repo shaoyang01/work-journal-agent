@@ -36,7 +36,7 @@ private struct WorkJournalConfig {
     var vaultPath = ""
     var dailyDir = "Daily"
     var taskDir = "Tasks"
-    var writeTaskNotes = false
+    var writeTaskNotes = true
     var knowledgeDir = "Knowledge"
     var writeKnowledgeNotes = false
 
@@ -79,7 +79,7 @@ private struct WorkJournalConfig {
         config.vaultPath = sections.value("obsidian", "vault_path", config.vaultPath)
         config.dailyDir = sections.value("obsidian", "daily_dir", config.dailyDir)
         config.taskDir = sections.value("obsidian", "task_dir", config.taskDir)
-        config.writeTaskNotes = sections.bool("obsidian", "write_task_notes", config.writeTaskNotes)
+        config.writeTaskNotes = true
         config.knowledgeDir = sections.value("obsidian", "knowledge_dir", config.knowledgeDir)
         config.writeKnowledgeNotes = sections.bool("obsidian", "write_knowledge_notes", config.writeKnowledgeNotes)
 
@@ -121,7 +121,7 @@ private struct WorkJournalConfig {
         vault_path = "\(tomlString(vaultPath))"
         daily_dir = "\(tomlString(dailyDir))"
         task_dir = "\(tomlString(taskDir))"
-        write_task_notes = \(writeTaskNotes.toml)
+        write_task_notes = true
         knowledge_dir = "\(tomlString(knowledgeDir))"
         write_knowledge_notes = \(writeKnowledgeNotes.toml)
 
@@ -472,10 +472,8 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         taskField = textField(width: 170)
         knowledgeField = textField(width: 170)
         addInlineFields(to: section, y: 126, fields: [("Daily 目录", dailyField), ("Tasks 目录", taskField), ("Knowledge 目录", knowledgeField)])
-        writeTaskSwitch = switchControl()
         writeKnowledgeSwitch = switchControl()
-        addSwitchRow(to: section, y: 74, label: "写入独立任务笔记", detail: "为每个任务生成单独笔记。", control: writeTaskSwitch)
-        addSwitchRow(to: section, y: 32, label: "写入 Knowledge 笔记", detail: "实验功能，生成知识专题笔记。", control: writeKnowledgeSwitch)
+        addSwitchRow(to: section, y: 52, label: "写入 Knowledge 笔记", detail: "实验功能，生成知识专题笔记。", control: writeKnowledgeSwitch)
         documentView.addSubview(section)
     }
 
@@ -569,7 +567,6 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         dailyField.stringValue = config.dailyDir
         taskField.stringValue = config.taskDir
         knowledgeField.stringValue = config.knowledgeDir
-        writeTaskSwitch.state = config.writeTaskNotes ? .on : .off
         writeKnowledgeSwitch.state = config.writeKnowledgeNotes ? .on : .off
         codexSwitch.state = config.codexEnabled ? .on : .off
         codexSessionsField.stringValue = config.codexSessionsRoot
@@ -603,7 +600,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
         next.dailyDir = dailyField.stringValue
         next.taskDir = taskField.stringValue
         next.knowledgeDir = knowledgeField.stringValue
-        next.writeTaskNotes = writeTaskSwitch.state == .on
+        next.writeTaskNotes = true
         next.writeKnowledgeNotes = writeKnowledgeSwitch.state == .on
         next.codexEnabled = codexSwitch.state == .on
         next.codexSessionsRoot = codexSessionsField.stringValue
@@ -1054,6 +1051,140 @@ private struct NativeReviewDecision: Codable {
     var anchors: [String: [String]]
 }
 
+private struct RequirementSearchComboBox: NSViewRepresentable {
+    var requirements: [NativeRequirementOption]
+    @Binding var selectedRequirementId: String
+    var placeholder: String
+    var onSelect: (String) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSComboBox {
+        let comboBox = NSComboBox()
+        comboBox.usesDataSource = true
+        comboBox.completes = false
+        comboBox.isEditable = true
+        comboBox.numberOfVisibleItems = 10
+        comboBox.dataSource = context.coordinator
+        comboBox.delegate = context.coordinator
+        comboBox.placeholderString = placeholder
+        comboBox.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        comboBox.controlSize = .large
+        comboBox.drawsBackground = true
+        comboBox.backgroundColor = NSColor.hex(0x1A2026)
+        comboBox.textColor = NSColor.hex(0xF4F6F8)
+        return comboBox
+    }
+
+    func updateNSView(_ comboBox: NSComboBox, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.refreshFilter(query: comboBox.stringValue)
+        comboBox.placeholderString = placeholder
+
+        let isEditing = comboBox.window?.firstResponder === comboBox.currentEditor()
+        if !isEditing {
+            comboBox.stringValue = selectedDisplayText()
+        }
+        comboBox.reloadData()
+    }
+
+    private func selectedDisplayText() -> String {
+        guard !selectedRequirementId.isEmpty,
+              let requirement = requirements.first(where: { $0.id == selectedRequirementId }) else {
+            return ""
+        }
+        return Self.displayText(for: requirement)
+    }
+
+    private static func displayText(for requirement: NativeRequirementOption) -> String {
+        "\(requirement.title)  ·  \(requirement.project)"
+    }
+
+    final class Coordinator: NSObject, NSComboBoxDataSource, NSComboBoxDelegate, NSControlTextEditingDelegate {
+        var parent: RequirementSearchComboBox
+        private var filteredRequirements: [NativeRequirementOption]
+
+        init(_ parent: RequirementSearchComboBox) {
+            self.parent = parent
+            self.filteredRequirements = parent.requirements
+        }
+
+        func numberOfItems(in comboBox: NSComboBox) -> Int {
+            filteredRequirements.count
+        }
+
+        func comboBox(_ comboBox: NSComboBox, objectValueForItemAt index: Int) -> Any? {
+            guard filteredRequirements.indices.contains(index) else { return nil }
+            return RequirementSearchComboBox.displayText(for: filteredRequirements[index])
+        }
+
+        func comboBoxSelectionDidChange(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            applySelection(from: comboBox)
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            refreshFilter(query: comboBox.stringValue)
+            comboBox.reloadData()
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let comboBox = notification.object as? NSComboBox else { return }
+            if comboBox.indexOfSelectedItem >= 0 {
+                applySelection(from: comboBox)
+                return
+            }
+
+            let query = comboBox.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return }
+            refreshFilter(query: query)
+            if let exactMatch = filteredRequirements.first(where: { requirement in
+                RequirementSearchComboBox.displayText(for: requirement).localizedCaseInsensitiveContains(query)
+            }) {
+                select(exactMatch, in: comboBox)
+            }
+        }
+
+        func refreshFilter(query: String) {
+            let normalizedQuery = normalize(query)
+            guard !normalizedQuery.isEmpty else {
+                filteredRequirements = parent.requirements
+                return
+            }
+            filteredRequirements = parent.requirements.filter { requirement in
+                let haystack = normalize([
+                    requirement.title,
+                    requirement.project,
+                    requirement.id,
+                    requirement.note ?? ""
+                ].joined(separator: " "))
+                return haystack.contains(normalizedQuery)
+            }
+        }
+
+        private func applySelection(from comboBox: NSComboBox) {
+            let index = comboBox.indexOfSelectedItem
+            guard filteredRequirements.indices.contains(index) else { return }
+            select(filteredRequirements[index], in: comboBox)
+        }
+
+        private func select(_ requirement: NativeRequirementOption, in comboBox: NSComboBox) {
+            parent.selectedRequirementId = requirement.id
+            comboBox.stringValue = RequirementSearchComboBox.displayText(for: requirement)
+            parent.onSelect(requirement.id)
+        }
+
+        private func normalize(_ value: String) -> String {
+            value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+        }
+    }
+}
+
 private final class RequirementReviewStore: ObservableObject {
     @Published var candidates: [NativeReviewCandidate] = []
     @Published var requirements: [NativeRequirementOption] = []
@@ -1140,6 +1271,10 @@ private final class RequirementReviewStore: ObservableObject {
         guard let index = candidates.firstIndex(where: { $0.id == candidateId }) else { return }
         candidates[index].requirementId = requirementId
         guard !requirementId.isEmpty else {
+            let suggestedTitle = candidates[index].suggestedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !suggestedTitle.isEmpty {
+                candidates[index].title = suggestedTitle
+            }
             statusMessage = "有未保存修改"
             return
         }
@@ -1380,6 +1515,34 @@ private final class RequirementManagerStore: ObservableObject {
         }
     }
 
+    func mergeRequirement(sourceId: String, targetId: String) {
+        let sourceId = sourceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetId = targetId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sourceId.isEmpty, !targetId.isEmpty, sourceId != targetId else {
+            statusMessage = "请选择不同的目标需求"
+            return
+        }
+        isLoading = true
+        statusMessage = "正在合并需求..."
+        let root = projectRoot
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let payload = try Self.mergeRequirement(projectRoot: root, sourceId: sourceId, targetId: targetId)
+                DispatchQueue.main.async {
+                    self.requirements = payload.requirements
+                    self.summary = payload.summary
+                    self.statusMessage = "已合并需求"
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.statusMessage = "合并失败：\(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
     private static func loadPayload(projectRoot: String) throws -> NativeRequirementManagementPayload {
         let script = """
         import json
@@ -1413,11 +1576,30 @@ private final class RequirementManagerStore: ObservableObject {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(NativeRequirementManagementPayload.self, from: output)
     }
+
+    private static func mergeRequirement(projectRoot: String, sourceId: String, targetId: String) throws -> NativeRequirementManagementPayload {
+        let script = """
+        import json
+        import sys
+        from work_journal_agent.config import load_config
+        from work_journal_agent.requirements import merge_requirement_threads
+
+        body = json.load(sys.stdin)
+        merged = merge_requirement_threads(body.get("target_id", ""), [body.get("source_id", "")], config=load_config())
+        print(json.dumps(merged, ensure_ascii=False))
+        """
+        let input = try JSONSerialization.data(withJSONObject: ["source_id": sourceId, "target_id": targetId])
+        let output = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [], input: input)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(NativeRequirementManagementPayload.self, from: output)
+    }
 }
 
 private struct RequirementManagerView: View {
     @StateObject private var store: RequirementManagerStore
     @State private var filter = "active"
+    @State private var mergeTargets: [String: String] = [:]
 
     init(projectRoot: String) {
         _store = StateObject(wrappedValue: RequirementManagerStore(projectRoot: projectRoot))
@@ -1626,13 +1808,20 @@ private struct RequirementManagerView: View {
                         .frame(height: 38)
                         .background(fieldBackground)
                 }
-                fieldColumn(title: "项目", width: 160) {
-                    TextField("", text: requirement.project)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .frame(height: 38)
-                        .background(fieldBackground)
+                fieldColumn(title: "涉及项目", width: 180) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.mutedText)
+                        Text(requirement.wrappedValue.project.isEmpty ? "自动关联" : requirement.wrappedValue.project)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(requirement.wrappedValue.project.isEmpty || requirement.wrappedValue.project == "unknown" ? Theme.mutedText : Theme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(width: 180, height: 38, alignment: .leading)
+                    .background(fieldBackground)
                 }
                 fieldColumn(title: "类型", width: 118) {
                     Picker("", selection: requirement.requirementType) {
@@ -1679,6 +1868,10 @@ private struct RequirementManagerView: View {
                     .padding(.vertical, 6)
                     .background(fieldBackground)
             }
+
+            if !requirement.wrappedValue.id.hasPrefix("new_") {
+                mergeRequirementSection(requirement: requirement)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1686,6 +1879,42 @@ private struct RequirementManagerView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(statusBorder(requirement.wrappedValue.status)))
+        )
+    }
+
+    private func mergeRequirementSection(requirement: Binding<NativeRequirementOption>) -> some View {
+        let sourceId = requirement.wrappedValue.id
+        let candidates = store.requirements.filter { !$0.id.hasPrefix("new_") && $0.id != sourceId }
+        return HStack(alignment: .bottom, spacing: 10) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("合并需求")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.secondaryText)
+                RequirementSearchComboBox(
+                    requirements: candidates,
+                    selectedRequirementId: mergeTargetBinding(for: sourceId),
+                    placeholder: "输入目标需求标题查询",
+                    onSelect: { selectedRequirementId in
+                        mergeTargets[sourceId] = selectedRequirementId
+                    }
+                )
+                .frame(height: 36)
+                .background(fieldBackground)
+            }
+            Button {
+                store.mergeRequirement(sourceId: sourceId, targetId: mergeTargets[sourceId] ?? "")
+            } label: {
+                Label("合并到目标", systemImage: "arrow.triangle.merge")
+            }
+            .buttonStyle(.bordered)
+            .disabled((mergeTargets[sourceId] ?? "").isEmpty || store.isLoading)
+        }
+    }
+
+    private func mergeTargetBinding(for sourceId: String) -> Binding<String> {
+        Binding(
+            get: { mergeTargets[sourceId] ?? "" },
+            set: { mergeTargets[sourceId] = $0 }
         )
     }
 
@@ -1809,6 +2038,7 @@ private struct RequirementManagerView: View {
 private struct RequirementReviewView: View {
     @StateObject private var store: RequirementReviewStore
     @State private var filter = "all"
+    @State private var intakeModes: [String: String] = [:]
 
     init(projectRoot: String) {
         _store = StateObject(wrappedValue: RequirementReviewStore(projectRoot: projectRoot))
@@ -2038,59 +2268,12 @@ private struct RequirementReviewView: View {
 
     private func candidateCard(candidate: Binding<NativeReviewCandidate>) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("归属需求")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.secondaryText)
-                    Picker("", selection: candidate.requirementId) {
-                        Text("新需求").tag("")
-                        ForEach(store.requirementOptions(for: candidate.wrappedValue.project)) { requirement in
-                            Text("\(requirement.title)（\(requirement.project)）").tag(requirement.id)
-                        }
-                    }
-                    .frame(width: 320, height: 38)
-                    .onChange(of: candidate.wrappedValue.requirementId) { _, selectedRequirementId in
-                        store.applyRequirementSelection(candidateId: candidate.wrappedValue.id, requirementId: selectedRequirementId)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("需求标题")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.secondaryText)
-                    TextField("", text: candidate.title)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 16, weight: .bold))
-                        .padding(.horizontal, 10)
-                        .frame(height: 38)
-                        .background(fieldBackground)
-                        .disabled(!candidate.wrappedValue.requirementId.isEmpty)
-                }
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("状态")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.secondaryText)
-                    Picker("", selection: candidate.status) {
-                        Text("确认").tag("confirmed")
-                        Text("待确认").tag("pending")
-                        Text("忽略").tag("ignored")
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 210, height: 38)
-                }
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("类型")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.secondaryText)
-                    Picker("", selection: candidate.requirementType) {
-                        Text("直接").tag("direct")
-                        Text("方案").tag("plan-driven")
-                        Text("Review").tag("review")
-                        Text("排障").tag("debug")
-                        Text("文档").tag("docs")
-                    }
-                    .frame(width: 118, height: 38)
-                }
+            HStack(alignment: .top, spacing: 20) {
+                intakeSection(candidate: candidate)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                reviewControlSection(candidate: candidate)
+                    .frame(width: 218, alignment: .leading)
             }
 
             HStack(spacing: 8) {
@@ -2128,6 +2311,166 @@ private struct RequirementReviewView: View {
                 .fill(Theme.card)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(borderColor(for: candidate.wrappedValue.status)))
         )
+    }
+
+    private func intakeSection(candidate: Binding<NativeReviewCandidate>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("需求入库")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                    Text(intakeMode(for: candidate.wrappedValue) == "existing" ? "归并到已有需求标题" : "创建新的需求标题")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.mutedText)
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: 6) {
+                    intakeModeButton(candidate: candidate, mode: "new", title: "新建需求", symbol: "plus.square")
+                    intakeModeButton(candidate: candidate, mode: "existing", title: "归并已有", symbol: "arrow.triangle.merge")
+                }
+            }
+
+            if intakeMode(for: candidate.wrappedValue) == "existing" {
+                existingRequirementSection(candidate: candidate)
+            } else {
+                newRequirementSection(candidate: candidate)
+            }
+        }
+    }
+
+    private func intakeModeButton(candidate: Binding<NativeReviewCandidate>, mode: String, title: String, symbol: String) -> some View {
+        let isSelected = intakeMode(for: candidate.wrappedValue) == mode
+        return Button {
+            intakeModes[candidate.wrappedValue.id] = mode
+            if mode == "new" {
+                store.applyRequirementSelection(candidateId: candidate.wrappedValue.id, requirementId: "")
+            }
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(isSelected ? Theme.primaryText : Theme.secondaryText)
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(isSelected ? Theme.blue : Theme.badge)
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(isSelected ? Theme.blue : Theme.border))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func newRequirementSection(candidate: Binding<NativeReviewCandidate>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("新建需求标题")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+            TextField("", text: candidate.title)
+                .textFieldStyle(.plain)
+                .font(.system(size: 16, weight: .bold))
+                .padding(.horizontal, 10)
+                .frame(height: 40)
+                .frame(maxWidth: .infinity)
+                .background(fieldBackground)
+            aiSuggestionText(candidate.wrappedValue.suggestedTitle)
+        }
+    }
+
+    private func existingRequirementSection(candidate: Binding<NativeReviewCandidate>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("已有需求")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+            RequirementSearchComboBox(
+                requirements: store.requirementOptions(for: candidate.wrappedValue.project),
+                selectedRequirementId: candidate.requirementId,
+                placeholder: "输入标题、项目或需求 ID 查询",
+                onSelect: { selectedRequirementId in
+                    intakeModes[candidate.wrappedValue.id] = "existing"
+                    store.applyRequirementSelection(candidateId: candidate.wrappedValue.id, requirementId: selectedRequirementId)
+                }
+            )
+            .frame(height: 40)
+            .background(fieldBackground)
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: candidate.wrappedValue.requirementId.isEmpty ? "magnifyingglass" : "link")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(candidate.wrappedValue.requirementId.isEmpty ? Theme.mutedText : Theme.green)
+                if candidate.wrappedValue.requirementId.isEmpty {
+                    Text("未选择已有需求，当前 AI 标题保留为归并线索。")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.mutedText)
+                        .lineLimit(2)
+                } else {
+                    Text("归并后标题：\(candidate.wrappedValue.title)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(2)
+                }
+            }
+            aiSuggestionText(candidate.wrappedValue.suggestedTitle)
+        }
+    }
+
+    private func reviewControlSection(candidate: Binding<NativeReviewCandidate>) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("状态")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.secondaryText)
+                Picker("", selection: candidate.status) {
+                    Text("确认").tag("confirmed")
+                    Text("待确认").tag("pending")
+                    Text("忽略").tag("ignored")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 210, height: 38)
+            }
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("类型")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                    Picker("", selection: candidate.requirementType) {
+                        Text("直接").tag("direct")
+                        Text("方案").tag("plan-driven")
+                        Text("Review").tag("review")
+                        Text("排障").tag("debug")
+                        Text("文档").tag("docs")
+                    }
+                    .frame(width: 118, height: 38)
+                }
+            }
+        }
+    }
+
+    private func intakeModeBinding(_ candidate: Binding<NativeReviewCandidate>) -> Binding<String> {
+        Binding(
+            get: { intakeMode(for: candidate.wrappedValue) },
+            set: { mode in
+                intakeModes[candidate.wrappedValue.id] = mode
+                if mode == "new" {
+                    store.applyRequirementSelection(candidateId: candidate.wrappedValue.id, requirementId: "")
+                }
+            }
+        )
+    }
+
+    private func intakeMode(for candidate: NativeReviewCandidate) -> String {
+        if let mode = intakeModes[candidate.id] {
+            return mode
+        }
+        return candidate.requirementId.isEmpty ? "new" : "existing"
+    }
+
+    private func aiSuggestionText(_ title: String) -> some View {
+        Text("AI 建议标题：\(title.isEmpty ? "暂无" : title)")
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Theme.mutedText)
+            .lineLimit(2)
+            .truncationMode(.tail)
     }
 
     private func textBlock(title: String, text: String) -> some View {
@@ -2377,7 +2720,6 @@ private struct WorkJournalSettingsView: View {
             fieldRow("Daily 目录", text: $draft.dailyDir)
             fieldRow("Tasks 目录", text: $draft.taskDir)
             fieldRow("Knowledge 目录", text: $draft.knowledgeDir)
-            toggleRow("写入独立任务笔记", detail: "为每个任务生成独立笔记并链接到日报。", isOn: $draft.writeTaskNotes)
             toggleRow("写入 Knowledge 笔记", detail: "为知识沉淀生成独立专题笔记。", isOn: $draft.writeKnowledgeNotes)
         }
     }
@@ -2905,6 +3247,15 @@ private func createRuntimeDirectories(for config: WorkJournalConfig) {
     let databaseParent = URL(fileURLWithPath: expandTilde(config.databasePath)).deletingLastPathComponent()
     try? FileManager.default.createDirectory(at: databaseParent, withIntermediateDirectories: true)
     try? FileManager.default.createDirectory(atPath: expandTilde(config.outputDir), withIntermediateDirectories: true)
+    let vault = config.vaultPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !vault.isEmpty {
+        let vaultPath = expandTilde(vault)
+        try? FileManager.default.createDirectory(atPath: "\(vaultPath)/\(config.dailyDir)", withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: "\(vaultPath)/\(config.taskDir)", withIntermediateDirectories: true)
+        if config.writeKnowledgeNotes {
+            try? FileManager.default.createDirectory(atPath: "\(vaultPath)/\(config.knowledgeDir)", withIntermediateDirectories: true)
+        }
+    }
 }
 
 private func saveSecret(_ apiKey: String) throws {

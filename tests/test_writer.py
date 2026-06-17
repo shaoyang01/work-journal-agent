@@ -6,7 +6,7 @@ from pathlib import Path
 
 from work_journal_agent.config import AppConfig, AiConfig, ClaudeSourceConfig, CodexSourceConfig, KunSourceConfig, MergeConfig, ObsidianConfig, OpenCodeSourceConfig, PrivacyConfig, SourcesConfig, StorageConfig, ZCodeSourceConfig
 from work_journal_agent.merge import TaskSummary
-from work_journal_agent.writers.obsidian import compact_items, render_daily, write_daily
+from work_journal_agent.writers.obsidian import compact_items, render_daily, render_task, write_daily
 
 
 class WriterTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class WriterTests(unittest.TestCase):
 
         self.assertEqual(result, ["aaaaaaaaa…"])
 
-    def test_render_daily_uses_overview_and_brief_details(self):
+    def test_render_daily_uses_overview_and_task_links(self):
         task = TaskSummary(
             key="k1",
             title="排查登录异常",
@@ -40,11 +40,12 @@ class WriterTests(unittest.TestCase):
 
         output = render_daily(date(2026, 6, 11), [task])
 
-        self.assertIn("## 今日概览", output)
-        self.assertIn("## 任务详情", output)
-        self.assertIn("- 需求：帮我排查登录异常", output)
-        self.assertIn("- 产出：src/app.py", output)
-        self.assertNotIn("### 讨论方案", output)
+        self.assertIn("# 工作日报｜2026-06-11", output)
+        self.assertIn("## 一、今日概览", output)
+        self.assertIn("## 二、需求列表", output)
+        self.assertIn("[[Tasks/2026-06-11/排查登录异常\\|排查登录异常]]", output)
+        self.assertIn("| 需求事项 | 1 项 |", output)
+        self.assertNotIn("- 需求：帮我排查登录异常", output)
 
     def test_render_daily_shows_requirement_duration_when_available(self):
         task = TaskSummary(
@@ -59,9 +60,9 @@ class WriterTests(unittest.TestCase):
             requirement_created_at="2026-06-12T09:30:00+08:00",
         )
 
-        output = render_daily(date(2026, 6, 13), [task])
+        output = render_task(task, day=date(2026, 6, 13))
 
-        self.assertIn("- 已进行：1 天", output)
+        self.assertIn("| 已进行 | 1 天 |", output)
 
     def test_render_daily_filters_test_task(self):
         task = TaskSummary(
@@ -94,11 +95,13 @@ class WriterTests(unittest.TestCase):
 
         output = render_daily(date(2026, 6, 11), [task])
 
-        self.assertIn("- 待办：重启 OpenCode 加载插件；观察 inbox 是否写入", output)
-        self.assertIn("- 阻塞：缺少真实 OpenCode 启动验证", output)
-        self.assertIn("- 待确认：是否需要发布安装说明", output)
-        self.assertIn("- 验证缺口：未做端到端插件事件验证", output)
-        self.assertIn("- 建议责任方：user", output)
+        self.assertIn("## 三、风险与阻塞", output)
+        self.assertIn("| 阻塞 | 缺少真实 OpenCode 启动验证 | [[Tasks/2026-06-11/opencode-自动采集\\|OpenCode 自动采集]] |", output)
+        self.assertIn("| 待确认 | 是否需要发布安装说明 | [[Tasks/2026-06-11/opencode-自动采集\\|OpenCode 自动采集]] |", output)
+        self.assertIn("| 验证缺口 | 未做端到端插件事件验证 | [[Tasks/2026-06-11/opencode-自动采集\\|OpenCode 自动采集]] |", output)
+        self.assertIn("## 四、明日计划", output)
+        self.assertIn("| P0 | 重启 OpenCode 加载插件 | [[Tasks/2026-06-11/opencode-自动采集\\|OpenCode 自动采集]] |", output)
+        self.assertIn("| user |", output)
 
     def test_render_daily_hides_empty_ai_followups(self):
         task = TaskSummary(
@@ -112,10 +115,8 @@ class WriterTests(unittest.TestCase):
 
         output = render_daily(date(2026, 6, 11), [task])
 
-        self.assertNotIn("- 待办：", output)
-        self.assertNotIn("- 阻塞：", output)
-        self.assertNotIn("- 待确认：", output)
-        self.assertNotIn("- 验证缺口：", output)
+        self.assertNotIn("## 三、风险与阻塞", output)
+        self.assertNotIn("## 四、明日计划", output)
 
     def test_render_daily_prefers_important_deliverables(self):
         task = TaskSummary(
@@ -133,12 +134,70 @@ class WriterTests(unittest.TestCase):
             ai_artifact_paths=["src/work_journal_agent/ai.py"],
         )
 
-        output = render_daily(date(2026, 6, 12), [task])
+        output = render_task(task, day=date(2026, 6, 12))
 
-        self.assertIn("- 产出：实现重要产出识别", output)
-        self.assertIn("- 影响：日报从文件列表升级为成果说明", output)
-        self.assertIn("- 证据：python3 -m unittest discover -s tests 通过", output)
-        self.assertIn("- 产物路径：src/work_journal_agent/ai.py", output)
+        self.assertIn("## 今日产出", output)
+        self.assertIn("- 实现重要产出识别", output)
+        self.assertIn("## 影响范围", output)
+        self.assertIn("日报从文件列表升级为成果说明", output)
+        self.assertIn("## 证据依据", output)
+        self.assertIn("- python3 -m unittest discover -s tests 通过", output)
+        self.assertIn("## 产物路径", output)
+        self.assertIn("- src/work_journal_agent/ai.py", output)
+
+    def test_write_daily_always_generates_task_notes_with_escaped_links(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            task = TaskSummary(
+                key="k1",
+                title="目视分拣计薪二期",
+                day=date(2026, 6, 16),
+                cwd="/repo/tms-flink-finance",
+                sources={"codex", "zcode"},
+                event_count=138,
+                ai_questions=["确认方案 C 计薪口径"],
+                ai_owner_hint="user",
+            )
+            config = test_config(base)
+
+            write_daily(config, date(2026, 6, 16), [task])
+
+            daily = (base / "Daily" / "2026-06-16.md").read_text(encoding="utf-8")
+            task_path = base / "Tasks" / "2026-06-16" / "目视分拣计薪二期.md"
+            self.assertTrue(task_path.exists())
+            task_note = task_path.read_text(encoding="utf-8")
+            self.assertIn("[[Tasks/2026-06-16/目视分拣计薪二期\\|目视分拣计薪二期]]", daily)
+            self.assertIn("[[Daily/2026-06-16\\|2026-06-16 工作日报]]", task_note)
+
+    def test_render_task_prefers_structured_summary_over_raw_events(self):
+        task = TaskSummary(
+            key="k1",
+            title="调拨订单完整流程分析",
+            day=date(2026, 6, 17),
+            cwd="/repo/wms-out",
+            sources={"zcode"},
+            raw_requests=[
+                "I need to understand the complete allot order flow in the logistics-center project.",
+                "This session is being continued from a previous conversation that was compacted.",
+            ],
+            discussions=[
+                "ZCode 用户需求：I need to understand the complete allot order flow",
+                "ZCode 执行工具：TodoWrite",
+                "ZCode 执行工具：Grep",
+            ],
+            event_count=52,
+            ai_decision="已完成调拨订单流程分析，覆盖调拨生成、集单、分拣回调等关键链路。",
+            ai_deliverables=["调拨订单流程调研及关键类/方法定位"],
+            ai_impact="为分拣通知落地与后续联调提供业务基础。",
+        )
+
+        output = render_task(task, day=date(2026, 6, 17))
+
+        self.assertIn("围绕“调拨订单完整流程分析”开展工作，重点是调拨订单流程调研及关键类/方法定位。", output)
+        self.assertIn("- 调拨订单流程调研及关键类/方法定位", output)
+        self.assertIn("已完成调拨订单流程分析，覆盖调拨生成、集单、分拣回调等关键链路。", output)
+        self.assertNotIn("This session is being continued", output)
+        self.assertNotIn("ZCode 执行工具：Grep", output)
 
     def test_write_daily_does_not_generate_local_knowledge_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:

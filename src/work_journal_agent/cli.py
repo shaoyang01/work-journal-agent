@@ -14,7 +14,7 @@ from .event_semantics import enrich_task_semantics
 from .ai_run_tracker import TaskRunAlreadyActive, ensure_no_active_task_run, track_ai_task_run
 from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
-from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, load_review_payload, merge_confirmed_requirement_tasks, refresh_requirement_candidates, save_review_decisions
+from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, load_review_payload, merge_confirmed_requirement_tasks, merge_requirement_threads, refresh_requirement_candidates, save_review_decisions
 from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
@@ -92,6 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
     requirements_save_parser = requirements_subparsers.add_parser("save", help="Read requirement review decisions JSON from stdin")
     requirements_save_parser.add_argument("--date", type=parse_date, default=date.today())
     requirements_save_parser.set_defaults(func=cmd_requirements_save)
+    requirements_merge_parser = requirements_subparsers.add_parser("merge", help="Merge duplicate requirement threads")
+    requirements_merge_parser.add_argument("--primary", required=True, help="Requirement id to keep")
+    requirements_merge_parser.add_argument("--duplicate", action="append", required=True, help="Duplicate requirement id to merge into the primary; can be repeated")
+    requirements_merge_parser.set_defaults(func=cmd_requirements_merge)
 
     app_parser = subparsers.add_parser("app", help="Native app JSON integration")
     app_subparsers = app_parser.add_subparsers(dest="app_command", required=True)
@@ -384,6 +388,11 @@ def cmd_requirements_save(args: argparse.Namespace) -> None:
     if not isinstance(decisions, list):
         raise ValueError("decisions must be an array")
     print_json(save_review_decisions(args.date, decisions, config=config))
+
+
+def cmd_requirements_merge(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    print_json(merge_requirement_threads(args.primary, args.duplicate, config=config))
 
 
 def cmd_app_status(args: argparse.Namespace) -> None:

@@ -82,8 +82,7 @@ wj setup
 - 配置文件路径。
 - SQLite 数据库文件路径。
 - Obsidian vault 路径。
-- Daily / Tasks 目录名。
-- 是否写独立任务笔记。
+- Daily / Tasks 目录名；Tasks 详情笔记会随日报默认生成。
 - Knowledge 目录名。
 - 是否生成或更新知识专题笔记。
 - 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
@@ -120,10 +119,11 @@ output_dir = "./out"
 vault_path = "/path/to/your/ObsidianVault"
 daily_dir = "Daily"
 task_dir = "Tasks"
-write_task_notes = false
+write_task_notes = true
 ```
 
 `vault_path` 留空时，会写到 `storage.output_dir`，方便先试跑。
+每日生成时会同时写入 `Daily/YYYY-MM-DD.md` 和 `Tasks/YYYY-MM-DD/需求标题.md`。
 
 ## 旧数据迁移
 
