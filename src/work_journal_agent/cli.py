@@ -10,9 +10,11 @@ from typing import Any
 
 from .config import default_data_dir, load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
+from .event_semantics import enrich_task_semantics
+from .ai_run_tracker import TaskRunAlreadyActive, ensure_no_active_task_run, track_ai_task_run
 from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
-from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, merge_confirmed_requirement_tasks, save_review_decisions
+from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, load_review_payload, merge_confirmed_requirement_tasks, refresh_requirement_candidates, save_review_decisions
 from .review_server import run_review_server
 from .scheduler import install_daily_schedule, install_interval_schedule, schedule_status, uninstall_daily_schedule
 from .setup import configure_ai_for_config, run_interactive_setup
@@ -161,8 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--schedule", action="store_true", default=None, help="Install daily auto generation")
     setup_parser.add_argument("--no-schedule", action="store_false", dest="schedule", help="Skip daily auto generation")
     setup_parser.add_argument("--every-minutes", type=int, default=60, help="Background writer interval")
-    setup_parser.add_argument("--active-from", help="Only run background sync at or after HH:MM")
-    setup_parser.add_argument("--active-to", help="Only run background sync at or before HH:MM")
+    setup_parser.add_argument("--active-from", default="08:00", help="Only run background sync at or after HH:MM")
+    setup_parser.add_argument("--active-to", default="21:00", help="Only run background sync at or before HH:MM")
     setup_parser.set_defaults(func=cmd_setup)
 
     schedule_parser = subparsers.add_parser("schedule", help="Manage daily auto generation")
@@ -170,8 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_install_parser = schedule_subparsers.add_parser("install", help="Install daily auto generation")
     schedule_install_parser.add_argument("--time", help="Daily time, HH:MM")
     schedule_install_parser.add_argument("--every-minutes", type=int, default=60, help="Refresh interval when --time is omitted")
-    schedule_install_parser.add_argument("--active-from", help="Only run interval sync at or after HH:MM")
-    schedule_install_parser.add_argument("--active-to", help="Only run interval sync at or before HH:MM")
+    schedule_install_parser.add_argument("--active-from", default="08:00", help="Only run interval sync at or after HH:MM")
+    schedule_install_parser.add_argument("--active-to", default="21:00", help="Only run interval sync at or before HH:MM")
     schedule_install_parser.add_argument("--no-load", action="store_true", help="Write schedule file without loading it")
     schedule_install_parser.set_defaults(func=cmd_schedule_install)
     schedule_uninstall_parser = schedule_subparsers.add_parser("uninstall", help="Remove daily auto generation")
@@ -223,12 +225,26 @@ def cmd_generate_daily(args: argparse.Namespace) -> None:
     events = read_events(config.storage, day=args.date)
     events = filter_ignored_events(args.date, events, storage=config.storage)
     tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
-    cluster_result = review_task_clusters(config, tasks)
+    try:
+        with track_ai_task_run(
+            config,
+            day=args.date,
+            run_kind="daily_generation",
+            metadata={"event_count": len(events), "local_task_count": len(tasks), "dry_run": bool(args.dry_run)},
+            fail_if_active=True,
+        ):
+            semantic_result = enrich_task_semantics(config, tasks)
+            cluster_result = review_task_clusters(config, tasks)
+    except TaskRunAlreadyActive as exc:
+        print(exc)
+        return
     tasks = cluster_result.tasks
     ai_result = summarize_tasks(config, tasks)
     apply_requirement_assignments(config, args.date, tasks)
     tasks = merge_confirmed_requirement_tasks(tasks)
     if args.dry_run:
+        if semantic_result.enabled:
+            print(semantic_result.message)
         if should_print_cluster_message(cluster_result.message):
             print(cluster_result.message)
         if ai_result.enabled:
@@ -270,6 +286,12 @@ def cmd_generate_knowledge(args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     config = load_config(args.config)
+    if not args.dry_run:
+        try:
+            ensure_no_active_task_run(config)
+        except TaskRunAlreadyActive as exc:
+            print(exc)
+            return
     codex_result = empty_import_result("codex")
     if config.sources.codex.enabled:
         codex_root = config.sources.codex.sessions_root
@@ -314,40 +336,29 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 day=args.date,
                 storage_root=config.sources.zcode.storage_root,
             )
-    events = read_events(config.storage, day=args.date)
-    if args.dry_run:
-        events.extend(codex_result.events)
-        events.extend(opencode_result.events)
-        events.extend(kun_result.events)
-        events.extend(zcode_result.events)
-    events = filter_ignored_events(args.date, events, storage=config.storage)
-    tasks = group_events(events, min_keyword_overlap=config.merge.min_keyword_overlap)
-    cluster_result = review_task_clusters(config, tasks)
-    tasks = cluster_result.tasks
-    ai_result = summarize_tasks(config, tasks)
-    apply_requirement_assignments(config, args.date, tasks)
-    tasks = merge_confirmed_requirement_tasks(tasks)
     if args.dry_run:
         print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
         print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
         print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
         print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
-        if should_print_cluster_message(cluster_result.message):
-            print(cluster_result.message)
-        if ai_result.enabled:
-            print(ai_result.message)
-        print(render_daily(args.date, tasks))
         return
-    target = write_daily(config, args.date, tasks, write_knowledge=False)
+    try:
+        payload = refresh_requirement_candidates(config, args.date, fail_if_active=True)
+    except TaskRunAlreadyActive as exc:
+        print(exc)
+        return
     print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
     print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
     print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
     print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
-    if should_print_cluster_message(cluster_result.message):
-        print(cluster_result.message)
-    if ai_result.enabled:
-        print(ai_result.message)
-    print(str(target))
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    semantic_message = str(summary.get("semantic_summary") or "")
+    cluster_message = str(summary.get("cluster_review") or "")
+    if semantic_message:
+        print(semantic_message)
+    if should_print_cluster_message(cluster_message):
+        print(cluster_message)
+    print(f"Refreshed requirement candidates: {summary.get('total_candidates', 0)} total, {summary.get('pending_candidates', 0)} pending")
 
 
 def cmd_codex_import(args: argparse.Namespace) -> None:
@@ -363,7 +374,7 @@ def cmd_requirements_review(args: argparse.Namespace) -> None:
 
 def cmd_requirements_payload(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    print_json(build_review_payload(config, args.date))
+    print_json(load_review_payload(config, args.date))
 
 
 def cmd_requirements_save(args: argparse.Namespace) -> None:

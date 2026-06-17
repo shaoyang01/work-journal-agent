@@ -46,6 +46,23 @@ class WriterTests(unittest.TestCase):
         self.assertIn("- 产出：src/app.py", output)
         self.assertNotIn("### 讨论方案", output)
 
+    def test_render_daily_shows_requirement_duration_when_available(self):
+        task = TaskSummary(
+            key="k1",
+            title="分拣操作通知数据存储与并发控制方案设计",
+            day=date(2026, 6, 13),
+            cwd="/repo/wms-out",
+            sources={"codex"},
+            raw_requests=["继续处理分拣消息"],
+            event_count=2,
+            requirement_id="req_wms-out-sort",
+            requirement_created_at="2026-06-12T09:30:00+08:00",
+        )
+
+        output = render_daily(date(2026, 6, 13), [task])
+
+        self.assertIn("- 已进行：1 天", output)
+
     def test_render_daily_filters_test_task(self):
         task = TaskSummary(
             key="k1",

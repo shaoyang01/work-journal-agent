@@ -1,4 +1,6 @@
+import json
 import unittest
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -364,6 +366,134 @@ class AiTests(unittest.TestCase):
             call.assert_not_called()
             self.assertEqual(len(second.tasks), 1)
             self.assertIn("cached", second.message)
+
+    def test_review_task_clusters_splits_large_inputs_into_batches(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            tasks = task_list(*([event(f"e{i}", f"整理需求 {i}")] for i in range(13)))
+
+            def batch_response(_: object, __: str, prompt: str, **___: object) -> dict[str, object]:
+                context = json.loads(prompt[prompt.index("[") :])
+                self.assertTrue(all("events" not in item for item in context))
+                event_ids = [event_id for item in context for event_id in item["event_ids"]]
+                return {
+                    "groups": [
+                        {"title": f"整理需求 {event_id}", "event_ids": [event_id], "confidence": 0.9, "reason": "保持"}
+                        for event_id in sorted(event_ids)
+                    ]
+                }
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch(
+                "work_journal_agent.ai.call_deepseek_for_prompt",
+                side_effect=batch_response,
+            ) as call:
+                result = review_task_clusters(test_config(base), tasks)
+
+            self.assertEqual(call.call_count, 3)
+            self.assertTrue(result.used)
+            self.assertIn("3 call", result.message)
+            self.assertEqual(len(result.tasks), 13)
+
+    def test_review_task_clusters_recursively_reviews_after_batch_merge(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            tasks = task_list(*([event(f"e{i}", f"生产计划消息链路 {i}")] for i in range(13)))
+
+            def cluster_response(_: object, __: str, prompt: str, **___: object) -> dict[str, object]:
+                context = json.loads(prompt[prompt.index("[") :])
+                self.assertTrue(all("events" not in item for item in context))
+                grouped_event_ids = [tuple(item["event_ids"]) for item in context]
+                event_ids = {event_id for group in grouped_event_ids for event_id in group}
+                if ("e0", "e1") in grouped_event_ids and "e2" in event_ids:
+                    return {"groups": [{"title": "生产计划消息链路", "event_ids": ["e0", "e1", "e2"], "confidence": 0.9, "reason": "跨批继续合并"}]}
+                if {"e0", "e1"}.issubset(event_ids) and ("e0", "e1", "e2") not in grouped_event_ids:
+                    return {"groups": [{"title": "生产计划消息链路", "event_ids": ["e0", "e1"], "confidence": 0.9, "reason": "同一需求"}]}
+                if ("e0", "e1", "e2") in grouped_event_ids:
+                    return {"groups": [{"title": "生产计划消息链路", "event_ids": ["e0", "e1", "e2"], "confidence": 0.9, "reason": "已稳定"}]}
+                return {
+                    "groups": [
+                        {"title": f"生产计划消息链路 {event_id}", "event_ids": [event_id], "confidence": 0.9, "reason": "保持"}
+                        for event_id in sorted(event_ids)
+                    ]
+                }
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch(
+                "work_journal_agent.ai.call_deepseek_for_prompt",
+                side_effect=cluster_response,
+            ) as call:
+                result = review_task_clusters(test_config(base), tasks)
+
+            self.assertEqual(call.call_count, 7)
+            self.assertTrue(result.used)
+            self.assertIn("3 round", result.message)
+            self.assertTrue(any(task.event_ids == {"e0", "e1", "e2"} for task in result.tasks))
+
+    def test_review_task_clusters_keeps_failed_batch_original(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            tasks = task_list(*([event(f"e{i}", f"整理需求 {i}")] for i in range(7)))
+
+            def flaky_response(_: object, __: str, prompt: str, **___: object) -> dict[str, object]:
+                context = json.loads(prompt[prompt.index("[") :])
+                event_ids = [event_id for item in context for event_id in item["event_ids"]]
+                if "e6" in event_ids:
+                    raise OSError("connection closed")
+                return {
+                    "groups": [
+                        {"title": f"整理需求 {event_id}", "event_ids": [event_id], "confidence": 0.9, "reason": "保持"}
+                        for event_id in event_ids
+                    ]
+                }
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch(
+                "work_journal_agent.ai.call_deepseek_for_prompt",
+                side_effect=flaky_response,
+            ):
+                result = review_task_clusters(test_config(base), tasks)
+
+            self.assertTrue(result.used)
+            self.assertEqual(len(result.tasks), 7)
+            self.assertIn("failed batch", result.message)
+
+    def test_review_task_clusters_can_merge_cross_repo_requirements(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            tms_event = replace(event("e1", "实现鲜猪肉质检计薪 TMS 链路"), cwd="/repo/tms-flink-finance")
+            pfms_event = replace(event("e2", "实现鲜猪肉质检计薪 PFMS 费用枚举"), cwd="/repo/pfms")
+            tasks = task_list([tms_event], [pfms_event])
+
+            def cross_repo_response(_: object, __: str, prompt: str, **___: object) -> dict[str, object]:
+                context = json.loads(prompt[prompt.index("[") :])
+                projects = {item["project"] for item in context}
+                self.assertEqual(projects, {"tms-flink-finance", "pfms"})
+                return {
+                    "groups": [
+                        {
+                            "title": "实现鲜猪肉质检计薪跨仓链路",
+                            "event_ids": ["e1", "e2"],
+                            "confidence": 0.9,
+                            "reason": "同一需求分别覆盖 TMS 和 PFMS",
+                        }
+                    ]
+                }
+
+            with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}), patch(
+                "work_journal_agent.ai.call_deepseek_for_prompt",
+                side_effect=cross_repo_response,
+            ):
+                result = review_task_clusters(test_config(base), tasks)
+
+            self.assertTrue(result.used)
+            self.assertEqual(len(result.tasks), 1)
+            self.assertEqual(result.tasks[0].event_ids, {"e1", "e2"})
 
     def test_clean_knowledge_topics_validates_payload(self):
         topics = clean_knowledge_topics(

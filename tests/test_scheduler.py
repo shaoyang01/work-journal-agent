@@ -27,6 +27,26 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("end=1800", command)
         self.assertIn("date +%H%M", command)
 
+    def test_install_interval_schedule_defaults_to_workday_window(self):
+        with tempfile.TemporaryDirectory() as temp_home:
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = temp_home
+            try:
+                result = install_interval_schedule(
+                    project_root=Path("/tmp/demo project"),
+                    every_minutes=60,
+                    load=False,
+                )
+                content = result.path.read_text(encoding="utf-8")
+
+                self.assertIn("start=0800", content)
+                self.assertIn("end=2100", content)
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+
     def test_active_window_requires_both_bounds(self):
         with self.assertRaises(ValueError):
             active_window_command("09:00", None)

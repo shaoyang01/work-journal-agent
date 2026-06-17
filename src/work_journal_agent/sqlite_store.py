@@ -114,12 +114,47 @@ class WorkJournalStore:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(namespace, day)
             );
+            CREATE TABLE IF NOT EXISTS ai_task_runs (
+                id TEXT PRIMARY KEY,
+                day TEXT NOT NULL,
+                run_kind TEXT NOT NULL,
+                model TEXT,
+                status TEXT NOT NULL,
+                total_items INTEGER NOT NULL DEFAULT 0,
+                completed_items INTEGER NOT NULL DEFAULT 0,
+                failed_items INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                error_message TEXT,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_task_runs_day_status
+                ON ai_task_runs(day, status, started_at);
+            CREATE TABLE IF NOT EXISTS ai_task_run_items (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                batch_index INTEGER,
+                input_hash TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_ms INTEGER,
+                error_message TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES ai_task_runs(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_task_run_items_run_phase
+                ON ai_task_run_items(run_id, phase, status, batch_index);
             """
         )
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
+        ensure_column(conn, "ai_task_run_items", "result_json", "TEXT NOT NULL DEFAULT '{}'")
 
     def migration_done(self, conn: sqlite3.Connection, name: str) -> bool:
         row = conn.execute("SELECT 1 FROM migrations WHERE name = ?", (name,)).fetchone()
@@ -324,6 +359,158 @@ class WorkJournalStore:
     def prune_ai_cache(self, conn: sqlite3.Connection, namespace: str, *, cutoff: date) -> None:
         conn.execute("DELETE FROM ai_cache WHERE namespace = ? AND day < ?", (namespace, cutoff.isoformat()))
 
+    def create_ai_task_run(self, conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO ai_task_runs(
+                id, day, run_kind, model, status, total_items, completed_items, failed_items,
+                started_at, finished_at, error_message, metadata_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(payload["id"]),
+                str(payload["day"]),
+                str(payload["run_kind"]),
+                payload.get("model"),
+                str(payload.get("status") or "running"),
+                int(payload.get("total_items") or 0),
+                int(payload.get("completed_items") or 0),
+                int(payload.get("failed_items") or 0),
+                str(payload.get("started_at") or now_iso()),
+                payload.get("finished_at"),
+                payload.get("error_message"),
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+    def finish_ai_task_run(self, conn: sqlite3.Connection, run_id: str, *, status: str, error_message: str | None = None) -> None:
+        conn.execute(
+            "UPDATE ai_task_runs SET status = ?, finished_at = ?, error_message = ? WHERE id = ?",
+            (status, now_iso(), error_message, run_id),
+        )
+
+    def create_ai_task_run_item(self, conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO ai_task_run_items(
+                id, run_id, phase, stage, batch_index, input_hash, status, started_at,
+                finished_at, duration_ms, error_message, result_json, metadata_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(payload["id"]),
+                str(payload["run_id"]),
+                str(payload["phase"]),
+                str(payload["stage"]),
+                payload.get("batch_index"),
+                payload.get("input_hash"),
+                str(payload.get("status") or "running"),
+                str(payload.get("started_at") or now_iso()),
+                payload.get("finished_at"),
+                payload.get("duration_ms"),
+                payload.get("error_message"),
+                json.dumps(payload.get("result") or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(payload.get("metadata") or {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        conn.execute("UPDATE ai_task_runs SET total_items = total_items + 1 WHERE id = ?", (str(payload["run_id"]),))
+
+    def finish_ai_task_run_item(
+        self,
+        conn: sqlite3.Connection,
+        item_id: str,
+        *,
+        status: str,
+        error_message: str | None = None,
+        duration_ms: int | None = None,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        row = conn.execute("SELECT run_id, status FROM ai_task_run_items WHERE id = ?", (item_id,)).fetchone()
+        if not row:
+            return
+        previous_status = str(row["status"])
+        if previous_status in {"succeeded", "failed", "cached", "skipped"}:
+            return
+        conn.execute(
+            "UPDATE ai_task_run_items SET status = ?, finished_at = ?, duration_ms = ?, error_message = ?, result_json = ? WHERE id = ?",
+            (status, now_iso(), duration_ms, error_message, json.dumps(result or {}, ensure_ascii=False, sort_keys=True), item_id),
+        )
+        failed_increment = 1 if status == "failed" else 0
+        conn.execute(
+            "UPDATE ai_task_runs SET completed_items = completed_items + 1, failed_items = failed_items + ? WHERE id = ?",
+            (failed_increment, str(row["run_id"])),
+        )
+
+    def active_ai_task_run(self, conn: sqlite3.Connection, *, day: date | None = None) -> dict[str, Any]:
+        params: tuple[str, ...] = ()
+        where = "WHERE status = 'running'"
+        if day is not None:
+            where += " AND day = ?"
+            params = (day.isoformat(),)
+        row = conn.execute(
+            f"""
+            SELECT id, day, run_kind, model, status, total_items, completed_items, failed_items,
+                   started_at, finished_at, error_message, metadata_json
+            FROM ai_task_runs
+            {where}
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        return self.ai_task_run_with_items(conn, row) if row else {}
+
+    def running_ai_task_runs(self, conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, day, run_kind, model, status, total_items, completed_items, failed_items,
+                   started_at, finished_at, error_message, metadata_json
+            FROM ai_task_runs
+            WHERE status = 'running'
+            ORDER BY started_at DESC
+            """
+        ).fetchall()
+        return [ai_task_run_row_to_dict(row) for row in rows]
+
+    def latest_ai_task_run(self, conn: sqlite3.Connection, *, day: date | None = None) -> dict[str, Any]:
+        params: tuple[str, ...] = ()
+        where = ""
+        if day is not None:
+            where = "WHERE day = ?"
+            params = (day.isoformat(),)
+        row = conn.execute(
+            f"""
+            SELECT id, day, run_kind, model, status, total_items, completed_items, failed_items,
+                   started_at, finished_at, error_message, metadata_json
+            FROM ai_task_runs
+            {where}
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        return self.ai_task_run_with_items(conn, row) if row else {}
+
+    def ai_task_run_with_items(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+        payload = ai_task_run_row_to_dict(row)
+        payload["items"] = self.load_ai_task_run_items(conn, str(row["id"]))
+        return payload
+
+    def load_ai_task_run_items(self, conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, run_id, phase, stage, batch_index, input_hash, status,
+                   started_at, finished_at, duration_ms, error_message, result_json, metadata_json
+            FROM ai_task_run_items
+            WHERE run_id = ?
+            ORDER BY started_at, phase, stage, batch_index, id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [ai_task_run_item_row_to_dict(row) for row in rows]
+
     def migrate_ai_cache_from_json(self, conn: sqlite3.Connection, *, namespace: str, cache_dir: Path, migration_name: str) -> int:
         imported = 0
         if cache_dir.exists():
@@ -442,6 +629,48 @@ def json_list(text: str | None) -> list[Any]:
     except json.JSONDecodeError:
         return []
     return value if isinstance(value, list) else []
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(row["name"] == column for row in rows):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def ai_task_run_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "day": row["day"],
+        "run_kind": row["run_kind"],
+        "model": row["model"],
+        "status": row["status"],
+        "total_items": int(row["total_items"] or 0),
+        "completed_items": int(row["completed_items"] or 0),
+        "failed_items": int(row["failed_items"] or 0),
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "error_message": row["error_message"],
+        "metadata": json_dict(row["metadata_json"]),
+    }
+
+
+def ai_task_run_item_row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "run_id": row["run_id"],
+        "phase": row["phase"],
+        "stage": row["stage"],
+        "batch_index": row["batch_index"],
+        "input_hash": row["input_hash"],
+        "status": row["status"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "duration_ms": row["duration_ms"],
+        "error_message": row["error_message"],
+        "result": json_dict(row["result_json"]),
+        "metadata": json_dict(row["metadata_json"]),
+    }
 
 
 def read_json_object(path: Path) -> dict[str, Any]:

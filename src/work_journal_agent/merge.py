@@ -40,6 +40,8 @@ class TaskSummary:
     ai_validation_gaps: list[str] = field(default_factory=list)
     ai_owner_hint: str | None = None
     requirement_id: str | None = None
+    requirement_created_at: str | None = None
+    requirement_updated_at: str | None = None
 
     def add(self, event: WorkEvent) -> None:
         self.event_count += 1
@@ -180,12 +182,14 @@ def title_from_summary(summary: str) -> str:
 
 
 def clean_title(value: str) -> str:
-    cleaned = value
+    cleaned = strip_skill_invocations(value)
     prefixes = (
         "Codex 用户需求：",
         "Claude 用户需求：",
+        "ZCode 用户需求：",
         "Codex 结论：",
         "Claude 结论：",
+        "ZCode 结论：",
     )
     for prefix in prefixes:
         if cleaned.startswith(prefix):
@@ -193,6 +197,15 @@ def clean_title(value: str) -> str:
     cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
+
+
+def strip_skill_invocations(value: str) -> str:
+    cleaned = value
+    cleaned = re.sub(r"\[\$?[A-Za-z0-9_.-]+\]\([^)]*/SKILL\.md\)", " ", cleaned)
+    cleaned = re.sub(r"@?/?[^\s]*\.codex/skills/[^\s)]+/SKILL\.md", " ", cleaned)
+    cleaned = re.sub(r"@?/?[^\s]*\.agents/skills/[^\s)]+/SKILL\.md", " ", cleaned)
+    cleaned = re.sub(r"\$[A-Za-z0-9_.-]+", " ", cleaned)
+    return " ".join(cleaned.split())
 
 
 def infer_title(value: str) -> str | None:

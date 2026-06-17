@@ -40,7 +40,7 @@ class ConfigTests(unittest.TestCase):
         result = upsert_ai_config(text, enabled=True)
 
         self.assertIn("enabled = true", result)
-        self.assertIn('model = "deepseek-v4-flash"', result)
+        self.assertIn('model = "deepseek-v4-pro"', result)
         self.assertNotIn('model = "old"', result)
         self.assertIn("[merge]", result)
 

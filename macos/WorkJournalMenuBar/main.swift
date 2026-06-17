@@ -43,7 +43,7 @@ private struct WorkJournalConfig {
     var aiEnabled = false
     var provider = "deepseek"
     var baseUrl = "https://api.deepseek.com"
-    var model = "deepseek-v4-flash"
+    var model = "deepseek-v4-pro"
     var apiKeyEnv = "DEEPSEEK_API_KEY"
     var timeoutSeconds = "180"
     var cacheEnabled = true
@@ -175,6 +175,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var preferencesController: PreferencesWindowController?
     private var reviewController: ReviewWindowController?
+    private var requirementManagerController: RequirementManagerWindowController?
     private let projectRoot = AppPaths.projectRoot
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -226,6 +227,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Work Journal", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(item("今日需求确认...", #selector(openReview)))
+        menu.addItem(item("需求管理...", #selector(openRequirementManager)))
         menu.addItem(item("同步最新事件", #selector(syncNow)))
         menu.addItem(item("生成今日日报", #selector(generateDaily)))
         menu.addItem(NSMenuItem.separator())
@@ -252,6 +254,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             reviewController = ReviewWindowController(projectRoot: projectRoot)
         }
         reviewController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openRequirementManager() {
+        if requirementManagerController == nil {
+            requirementManagerController = RequirementManagerWindowController(projectRoot: projectRoot)
+        }
+        requirementManagerController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -950,6 +960,31 @@ private final class ReviewWindowController: NSWindowController {
     }
 }
 
+private final class RequirementManagerWindowController: NSWindowController {
+    init(projectRoot: String) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 740),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Work Journal Agent 需求管理"
+        window.minSize = NSSize(width: 1040, height: 680)
+        super.init(window: window)
+        window.center()
+        window.contentView = NSHostingView(rootView: RequirementManagerView(projectRoot: projectRoot))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 private struct NativeReviewSummary: Codable {
     var totalCandidates: Int
     var pendingCandidates: Int
@@ -960,11 +995,36 @@ private struct NativeReviewPayload: Codable {
     var date: String
     var generatedAt: String
     var candidates: [NativeReviewCandidate]
+    var requirements: [NativeRequirementOption]
     var summary: NativeReviewSummary
+}
+
+private struct NativeRequirementOption: Codable, Identifiable {
+    var id: String
+    var title: String
+    var project: String
+    var requirementType: String
+    var status: String
+    var note: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct NativeRequirementManagementSummary: Codable {
+    var total: Int
+    var active: Int
+    var completed: Int
+}
+
+private struct NativeRequirementManagementPayload: Codable {
+    var generatedAt: String
+    var requirements: [NativeRequirementOption]
+    var summary: NativeRequirementManagementSummary
 }
 
 private struct NativeReviewCandidate: Codable, Identifiable {
     var candidateId: String
+    var requirementId: String
     var title: String
     var suggestedTitle: String
     var project: String
@@ -985,6 +1045,7 @@ private struct NativeReviewCandidate: Codable, Identifiable {
 
 private struct NativeReviewDecision: Codable {
     var candidateId: String
+    var requirementId: String
     var title: String
     var project: String
     var requirementType: String
@@ -995,6 +1056,7 @@ private struct NativeReviewDecision: Codable {
 
 private final class RequirementReviewStore: ObservableObject {
     @Published var candidates: [NativeReviewCandidate] = []
+    @Published var requirements: [NativeRequirementOption] = []
     @Published var summary = NativeReviewSummary(totalCandidates: 0, pendingCandidates: 0, eventCount: 0)
     @Published var statusMessage = "准备载入"
     @Published var isLoading = false
@@ -1018,6 +1080,7 @@ private final class RequirementReviewStore: ObservableObject {
                 DispatchQueue.main.async {
                     self.summary = payload.summary
                     self.candidates = payload.candidates
+                    self.requirements = payload.requirements
                     self.statusMessage = payload.candidates.isEmpty ? "今天暂无候选需求" : "已载入 \(payload.candidates.count) 个候选需求"
                     self.isLoading = false
                 }
@@ -1038,6 +1101,7 @@ private final class RequirementReviewStore: ObservableObject {
         let decisions = candidates.map {
             NativeReviewDecision(
                 candidateId: $0.candidateId,
+                requirementId: $0.requirementId,
                 title: $0.title,
                 project: $0.project,
                 requirementType: $0.requirementType,
@@ -1053,6 +1117,7 @@ private final class RequirementReviewStore: ObservableObject {
                 DispatchQueue.main.async {
                     self.summary = payload.summary
                     self.candidates = payload.candidates
+                    self.requirements = payload.requirements
                     self.statusMessage = "已保存确认结果"
                     self.isLoading = false
                 }
@@ -1071,18 +1136,46 @@ private final class RequirementReviewStore: ObservableObject {
         statusMessage = "有未保存修改"
     }
 
+    func applyRequirementSelection(candidateId: String, requirementId: String) {
+        guard let index = candidates.firstIndex(where: { $0.id == candidateId }) else { return }
+        candidates[index].requirementId = requirementId
+        guard !requirementId.isEmpty else {
+            statusMessage = "有未保存修改"
+            return
+        }
+        guard let requirement = requirements.first(where: { $0.id == requirementId }) else {
+            statusMessage = "有未保存修改"
+            return
+        }
+        candidates[index].title = requirement.title
+        candidates[index].project = requirement.project
+        candidates[index].requirementType = requirement.requirementType
+        statusMessage = "有未保存修改"
+    }
+
+    func requirementOptions(for project: String) -> [NativeRequirementOption] {
+        requirements.sorted {
+            let leftSameProject = $0.project == project
+            let rightSameProject = $1.project == project
+            if leftSameProject != rightSameProject {
+                return leftSameProject
+            }
+            return $0.updatedAt > $1.updatedAt
+        }
+    }
+
     private static func loadPayload(projectRoot: String, dayText: String) throws -> NativeReviewPayload {
         let script = """
         from datetime import date
         import json
         import sys
         from work_journal_agent.config import load_config
-        from work_journal_agent.requirements import build_review_payload
+        from work_journal_agent.requirements import load_review_payload
 
-        payload = build_review_payload(load_config(), date.fromisoformat(sys.argv[1]))
+        payload = load_review_payload(load_config(), date.fromisoformat(sys.argv[1]))
         print(json.dumps(payload, ensure_ascii=False))
         """
-        let output = try runPython(projectRoot: projectRoot, script: script, arguments: [dayText])
+        let output = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [dayText])
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(NativeReviewPayload.self, from: output)
@@ -1103,7 +1196,7 @@ private final class RequirementReviewStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let input = try encoder.encode(["decisions": decisions])
-        _ = try runPython(projectRoot: projectRoot, script: script, arguments: [dayText], input: input)
+        _ = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [dayText], input: input)
     }
 
     private static func runPython(projectRoot: String, script: String, arguments: [String], input: Data? = nil) throws -> Data {
@@ -1179,6 +1272,538 @@ private func loadSecretsEnvironment() -> [String: String] {
         }
     }
     return result
+}
+
+private func runWorkJournalPython(projectRoot: String, script: String, arguments: [String], input: Data? = nil) throws -> Data {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
+    process.arguments = ["python3", "-c", script] + arguments
+    var environment = ProcessInfo.processInfo.environment
+    environment.merge(loadSecretsEnvironment()) { _, new in new }
+    environment["PYTHONPATH"] = "\(projectRoot)/src"
+    process.environment = environment
+
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+    if let input {
+        let inputPipe = Pipe()
+        process.standardInput = inputPipe
+        try process.run()
+        inputPipe.fileHandleForWriting.write(input)
+        try inputPipe.fileHandleForWriting.close()
+    } else {
+        try process.run()
+    }
+    let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    if process.terminationStatus != 0 {
+        let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        throw NSError(domain: "WorkJournalPython", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "python3 exited with \(process.terminationStatus)"])
+    }
+    return output
+}
+
+private final class RequirementManagerStore: ObservableObject {
+    @Published var requirements: [NativeRequirementOption] = []
+    @Published var summary = NativeRequirementManagementSummary(total: 0, active: 0, completed: 0)
+    @Published var statusMessage = "准备载入"
+    @Published var isLoading = false
+
+    private let projectRoot: String
+
+    init(projectRoot: String) {
+        self.projectRoot = projectRoot
+    }
+
+    func reload() {
+        isLoading = true
+        statusMessage = "正在读取需求池..."
+        let root = projectRoot
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let payload = try Self.loadPayload(projectRoot: root)
+                DispatchQueue.main.async {
+                    self.requirements = payload.requirements
+                    self.summary = payload.summary
+                    self.statusMessage = payload.requirements.isEmpty ? "暂无已有需求" : "已载入 \(payload.requirements.count) 个需求"
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.statusMessage = "载入失败：\(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    func addRequirement() {
+        let draft = NativeRequirementOption(
+            id: "new_\(UUID().uuidString)",
+            title: "",
+            project: "unknown",
+            requirementType: "direct",
+            status: "in_progress",
+            note: "",
+            createdAt: "",
+            updatedAt: ""
+        )
+        requirements.insert(draft, at: 0)
+        statusMessage = "已添加未保存需求"
+    }
+
+    func save() {
+        isLoading = true
+        statusMessage = "正在保存需求池..."
+        let root = projectRoot
+        let requirementsToSave = requirements
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let payload = try Self.saveRequirements(projectRoot: root, requirements: requirementsToSave)
+                DispatchQueue.main.async {
+                    self.requirements = payload.requirements
+                    self.summary = payload.summary
+                    self.statusMessage = "已保存需求池"
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.statusMessage = "保存失败：\(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    private static func loadPayload(projectRoot: String) throws -> NativeRequirementManagementPayload {
+        let script = """
+        import json
+        from work_journal_agent.config import load_config
+        from work_journal_agent.requirements import build_requirement_management_payload
+
+        print(json.dumps(build_requirement_management_payload(load_config()), ensure_ascii=False))
+        """
+        let output = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [])
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(NativeRequirementManagementPayload.self, from: output)
+    }
+
+    private static func saveRequirements(projectRoot: String, requirements: [NativeRequirementOption]) throws -> NativeRequirementManagementPayload {
+        let script = """
+        import json
+        import sys
+        from work_journal_agent.config import load_config
+        from work_journal_agent.requirements import save_requirement_threads
+
+        body = json.load(sys.stdin)
+        saved = save_requirement_threads(body.get("requirements", []), config=load_config())
+        print(json.dumps(saved, ensure_ascii=False))
+        """
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let input = try encoder.encode(["requirements": requirements])
+        let output = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [], input: input)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(NativeRequirementManagementPayload.self, from: output)
+    }
+}
+
+private struct RequirementManagerView: View {
+    @StateObject private var store: RequirementManagerStore
+    @State private var filter = "active"
+
+    init(projectRoot: String) {
+        _store = StateObject(wrappedValue: RequirementManagerStore(projectRoot: projectRoot))
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar
+            Divider().overlay(Theme.border)
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        header
+                        summaryStrip
+                        requirementList
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.top, 26)
+                    .padding(.bottom, 22)
+                }
+                footer
+            }
+            .background(Theme.surface)
+        }
+        .background(Theme.surface)
+        .foregroundStyle(Theme.primaryText)
+        .onAppear {
+            if store.requirements.isEmpty {
+                store.reload()
+            }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Work Journal")
+                    .font(.system(size: 18, weight: .bold))
+                Text("需求管理")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            .padding(.top, 54)
+            .padding(.horizontal, 22)
+
+            VStack(spacing: 8) {
+                filterButton("active", title: "进行中", symbol: "bolt.circle", count: activeCount)
+                filterButton("paused", title: "暂停中", symbol: "pause.circle", count: store.requirements.filter { $0.status == "paused" }.count)
+                filterButton("completed", title: "已完结", symbol: "checkmark.seal", count: store.requirements.filter { $0.status == "completed" }.count)
+                filterButton("all", title: "全部需求", symbol: "tray.full", count: store.requirements.count)
+            }
+            .padding(.top, 42)
+            .padding(.horizontal, 14)
+
+            Spacer()
+            HStack(spacing: 8) {
+                Circle().fill(store.isLoading ? Theme.orange : Theme.green).frame(width: 8, height: 8)
+                Text("\(store.summary.total) 个需求")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            .padding(.horizontal, 22)
+            .padding(.bottom, 22)
+        }
+        .frame(width: 188)
+        .background(Theme.sidebar)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("已有需求管理")
+                    .font(.system(size: 26, weight: .bold))
+                Text("维护跨天需求的名称、项目、类型和状态；完结后不再出现在需求确认下拉框。")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            Spacer()
+            Button {
+                store.addRequirement()
+            } label: {
+                Label("新增需求", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.blue)
+            Button {
+                store.reload()
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var summaryStrip: some View {
+        HStack(spacing: 0) {
+            summaryTile(symbol: "bolt.circle", title: "可选择", value: "\(activeCount)", color: Theme.green)
+            separator
+            summaryTile(symbol: "pause.circle", title: "暂停", value: "\(store.requirements.filter { $0.status == "paused" }.count)", color: Theme.orange)
+            separator
+            summaryTile(symbol: "checkmark.seal", title: "已完结", value: "\(store.summary.completed)", color: Theme.green)
+            separator
+            summaryTile(symbol: "tray.full", title: "全部", value: "\(store.summary.total)", color: Theme.blue)
+        }
+        .frame(maxWidth: .infinity, minHeight: 70)
+        .padding(.horizontal, 18)
+        .background(cardBackground)
+    }
+
+    private var requirementList: some View {
+        VStack(spacing: 12) {
+            if visibleRequirements.isEmpty {
+                emptyState
+            } else {
+                ForEach($store.requirements) { $requirement in
+                    if shouldShow(requirement) {
+                        requirementCard(requirement: $requirement)
+                    }
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Circle().fill(statusColor).frame(width: 8, height: 8)
+                Text(store.statusMessage)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button {
+                store.reload()
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            Button {
+                store.save()
+            } label: {
+                Label("保存需求", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.blue)
+            .disabled(store.requirements.isEmpty)
+        }
+        .padding(.horizontal, 28)
+        .frame(height: 72)
+        .background(Theme.footer)
+        .overlay(Rectangle().fill(Theme.border).frame(height: 1), alignment: .top)
+    }
+
+    private var activeCount: Int {
+        store.requirements.filter { $0.status == "in_progress" }.count
+    }
+
+    private var visibleRequirements: [NativeRequirementOption] {
+        store.requirements.filter(shouldShow)
+    }
+
+    private var statusColor: SwiftUI.Color {
+        if store.statusMessage.contains("失败") { return Theme.red }
+        if store.statusMessage.contains("未保存") || store.statusMessage.contains("正在") { return Theme.orange }
+        return Theme.green
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "tray")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+            Text(store.isLoading ? "正在加载..." : "当前筛选下没有需求")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+        }
+        .frame(maxWidth: .infinity, minHeight: 220)
+        .background(cardBackground)
+    }
+
+    private var separator: some View {
+        Rectangle().fill(Theme.border).frame(width: 1, height: 42).padding(.horizontal, 18)
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Theme.card)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+    }
+
+    private var fieldBackground: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(Theme.field)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.border))
+    }
+
+    private func requirementCard(requirement: Binding<NativeRequirementOption>) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                fieldColumn(title: "需求标题", width: nil) {
+                    TextField("", text: requirement.title)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 16, weight: .bold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 38)
+                        .background(fieldBackground)
+                }
+                fieldColumn(title: "项目", width: 160) {
+                    TextField("", text: requirement.project)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 38)
+                        .background(fieldBackground)
+                }
+                fieldColumn(title: "类型", width: 118) {
+                    Picker("", selection: requirement.requirementType) {
+                        Text("直接").tag("direct")
+                        Text("方案").tag("plan-driven")
+                        Text("Review").tag("review")
+                        Text("排障").tag("debug")
+                        Text("文档").tag("docs")
+                    }
+                    .frame(width: 118, height: 38)
+                }
+                fieldColumn(title: "状态", width: 142) {
+                    Picker("", selection: requirement.status) {
+                        Text("进行中").tag("in_progress")
+                        Text("暂停").tag("paused")
+                        Text("已完结").tag("completed")
+                        Text("归档").tag("archived")
+                    }
+                    .frame(width: 142, height: 38)
+                }
+            }
+
+            HStack(spacing: 8) {
+                statusBadge(requirement.wrappedValue.id.hasPrefix("new_") ? "未保存" : requirement.wrappedValue.id, color: Theme.mutedText)
+                statusBadge(statusTitle(requirement.wrappedValue.status), color: statusColor(requirement.wrappedValue.status))
+                if !requirement.wrappedValue.createdAt.isEmpty {
+                    statusBadge("创建 \(shortDate(requirement.wrappedValue.createdAt))", color: Theme.secondaryText)
+                }
+                if !requirement.wrappedValue.updatedAt.isEmpty {
+                    statusBadge("更新 \(shortDate(requirement.wrappedValue.updatedAt))", color: Theme.secondaryText)
+                }
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("备注")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.secondaryText)
+                TextEditor(text: noteBinding(requirement))
+                    .font(.system(size: 13, weight: .medium))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 56, maxHeight: 78)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(fieldBackground)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Theme.card)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(statusBorder(requirement.wrappedValue.status)))
+        )
+    }
+
+    private func fieldColumn<Content: View>(title: String, width: CGFloat?, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+            content()
+        }
+        .frame(width: width, alignment: .leading)
+    }
+
+    private func filterButton(_ id: String, title: String, symbol: String, count: Int) -> some View {
+        Button {
+            filter = id
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 22)
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text("\(count)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            .foregroundStyle(filter == id ? Theme.primaryText : Theme.secondaryText)
+            .padding(.horizontal, 14)
+            .frame(height: 42)
+            .background(filter == id ? Theme.selected : SwiftUI.Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func summaryTile(symbol: String, title: String, value: String, color: SwiftUI.Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.secondaryText)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 7) {
+                    Text(title).font(.system(size: 13, weight: .semibold))
+                    Circle().fill(color).frame(width: 8, height: 8)
+                }
+                Text(value)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Theme.primaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func statusBadge(_ text: String, color: SwiftUI.Color) -> some View {
+        Text(text.isEmpty ? "unknown" : text)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 13).fill(Theme.badge))
+    }
+
+    private func noteBinding(_ requirement: Binding<NativeRequirementOption>) -> Binding<String> {
+        Binding(
+            get: { requirement.wrappedValue.note ?? "" },
+            set: { requirement.wrappedValue.note = $0 }
+        )
+    }
+
+    private func shouldShow(_ requirement: NativeRequirementOption) -> Bool {
+        switch filter {
+        case "active":
+            return requirement.status == "in_progress"
+        case "paused":
+            return requirement.status == "paused"
+        case "completed":
+            return requirement.status == "completed"
+        default:
+            return true
+        }
+    }
+
+    private func statusTitle(_ status: String) -> String {
+        switch status {
+        case "in_progress": return "进行中"
+        case "paused": return "暂停中"
+        case "completed": return "已完结"
+        case "archived": return "归档"
+        default: return status
+        }
+    }
+
+    private func statusColor(_ status: String) -> SwiftUI.Color {
+        switch status {
+        case "in_progress": return Theme.green
+        case "paused": return Theme.orange
+        case "completed": return Theme.green
+        case "archived": return Theme.mutedText
+        default: return Theme.secondaryText
+        }
+    }
+
+    private func statusBorder(_ status: String) -> SwiftUI.Color {
+        switch status {
+        case "in_progress": return Theme.green
+        case "paused": return Theme.orange
+        case "completed": return Theme.border
+        default: return Theme.border
+        }
+    }
+
+    private func shortDate(_ value: String) -> String {
+        String(value.prefix(10))
+    }
 }
 
 private struct RequirementReviewView: View {
@@ -1415,6 +2040,21 @@ private struct RequirementReviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 7) {
+                    Text("归属需求")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.secondaryText)
+                    Picker("", selection: candidate.requirementId) {
+                        Text("新需求").tag("")
+                        ForEach(store.requirementOptions(for: candidate.wrappedValue.project)) { requirement in
+                            Text("\(requirement.title)（\(requirement.project)）").tag(requirement.id)
+                        }
+                    }
+                    .frame(width: 320, height: 38)
+                    .onChange(of: candidate.wrappedValue.requirementId) { _, selectedRequirementId in
+                        store.applyRequirementSelection(candidateId: candidate.wrappedValue.id, requirementId: selectedRequirementId)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 7) {
                     Text("需求标题")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.secondaryText)
@@ -1424,6 +2064,7 @@ private struct RequirementReviewView: View {
                         .padding(.horizontal, 10)
                         .frame(height: 38)
                         .background(fieldBackground)
+                        .disabled(!candidate.wrappedValue.requirementId.isEmpty)
                 }
                 VStack(alignment: .leading, spacing: 7) {
                     Text("状态")

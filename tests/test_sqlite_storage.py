@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from work_journal_agent.ai_cache import load_cache, prune_cache, save_cache
+from work_journal_agent.ai_run_tracker import finish_ai_task_item, start_ai_task_item, track_ai_task_run
 from work_journal_agent.cli import main
 from work_journal_agent.config import StorageConfig, load_config
 from work_journal_agent.events import WorkEvent, append_event, read_events
@@ -201,6 +202,63 @@ class SqliteStorageTests(unittest.TestCase):
             self.assertEqual(load_cache(storage, date(2026, 6, 10))["tasks"], [])
             self.assertEqual(load_cache(storage, date(2026, 6, 12))["tasks"][0]["key"], "new")
             self.assertFalse((base / "2026-06-12.json").exists())
+
+    def test_ai_task_run_tracks_semantic_and_cluster_items(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            config = sqlite_config(base)
+            day = date(2026, 6, 16)
+
+            with track_ai_task_run(config, day=day, run_kind="requirement_review", metadata={"event_count": 845}) as run_id:
+                semantic_item, semantic_started = start_ai_task_item(
+                    config,
+                    phase="semantic",
+                    stage="segment",
+                    batch_index=0,
+                    input_hash="semantic-hash",
+                    metadata={"task_key": "task-a"},
+                )
+                finish_ai_task_item(config, semantic_item, semantic_started, status="succeeded", result={"title": "语义标题"})
+                cluster_item, cluster_started = start_ai_task_item(
+                    config,
+                    phase="cluster",
+                    stage="round_1",
+                    batch_index=1,
+                    input_hash="cluster-hash",
+                    metadata={"task_count": 6},
+                )
+                finish_ai_task_item(
+                    config,
+                    cluster_item,
+                    cluster_started,
+                    status="failed",
+                    error_message="connection closed",
+                    result={"group_count": 0},
+                )
+
+                active = load_status(storage=config.storage)["active_ai_task_run"]
+                self.assertEqual(active["id"], run_id)
+                self.assertEqual(active["total_items"], 2)
+                self.assertEqual(active["completed_items"], 2)
+                self.assertEqual(active["failed_items"], 1)
+                self.assertEqual(len(active["items"]), 2)
+                item_by_phase = {item["phase"]: item for item in active["items"]}
+                self.assertEqual(item_by_phase["semantic"]["result"]["title"], "语义标题")
+                self.assertEqual(item_by_phase["cluster"]["result"]["group_count"], 0)
+                self.assertEqual(item_by_phase["cluster"]["error_message"], "connection closed")
+
+            status = load_status(storage=config.storage)
+            self.assertEqual(status["active_ai_task_run"], {})
+            self.assertEqual(status["latest_ai_task_run"]["status"], "succeeded")
+
+            import sqlite3
+
+            conn = sqlite3.connect(base / "work-journal.db")
+            try:
+                rows = conn.execute("SELECT phase, stage, status FROM ai_task_run_items ORDER BY phase").fetchall()
+            finally:
+                conn.close()
+            self.assertEqual(rows, [("cluster", "round_1", "failed"), ("semantic", "segment", "succeeded")])
 
 
 def sqlite_config(base: Path):
