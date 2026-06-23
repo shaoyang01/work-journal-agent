@@ -43,6 +43,10 @@ rsync -a \
 
 printf "@BUNDLE_RESOURCES@/project\n" >"${APP_DIR}/Contents/Resources/project-root.txt"
 
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --deep --sign - "${APP_DIR}" >/dev/null
+fi
+
 ln -sfn /Applications "${VOLUME_DIR}/Applications"
 cat >"${VOLUME_DIR}/README-试用说明.txt" <<EOF
 Work Journal Agent ${VERSION} 内部试用版
