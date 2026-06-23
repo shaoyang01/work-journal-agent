@@ -59,7 +59,7 @@ Work Journal Agent ${VERSION} 内部试用版
 说明：
 - 这是未公证的内部试用 DMG，不是正式签名发布包。
 - App 内置 work-journal-agent 源码，会通过系统 python3 运行本地 CLI。
-- 如果机器没有 python3，请先安装 Xcode Command Line Tools 或 Python 3。
+- 需要 Python 3.11+；如果 python3 --version 低于 3.11，请先安装或切换到 Python 3.11 以上版本。
 EOF
 
 rm -f "${DMG_PATH}"

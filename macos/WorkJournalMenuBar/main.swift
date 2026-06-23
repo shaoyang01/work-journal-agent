@@ -60,9 +60,9 @@ private struct WorkJournalConfig {
     var opencodeEnabled = defaultOpenCodeEnabled()
     var opencodeStorageRoot = "~/.local/share/opencode/storage"
     var opencodePluginPath = "~/.config/opencode/plugins/work-journal-agent.js"
-    var kunEnabled = defaultKunEnabled()
+    var kunEnabled = defaultKunEnabled() && !defaultKunProjectRoot().isEmpty
     var kunStorageRoot = "~/.kun/data"
-    var kunProjectRoot = AppPaths.projectRoot
+    var kunProjectRoot = defaultKunProjectRoot()
     var zcodeEnabled = defaultZCodeEnabled()
     var zcodeStorageRoot = "~/.zcode/cli"
 
@@ -105,7 +105,13 @@ private struct WorkJournalConfig {
         config.opencodePluginPath = sections.value("sources.opencode", "plugin_path", config.opencodePluginPath)
         config.kunEnabled = sections.bool("sources.kun", "enabled", config.kunEnabled)
         config.kunStorageRoot = sections.value("sources.kun", "storage_root", config.kunStorageRoot)
-        config.kunProjectRoot = sections.value("sources.kun", "project_root", config.kunProjectRoot)
+        let loadedKunProjectRoot = sections.value("sources.kun", "project_root", config.kunProjectRoot)
+        if isBundledProjectRoot(loadedKunProjectRoot) {
+            config.kunProjectRoot = defaultKunProjectRoot()
+            config.kunEnabled = false
+        } else {
+            config.kunProjectRoot = loadedKunProjectRoot
+        }
         config.zcodeEnabled = sections.bool("sources.zcode", "enabled", config.zcodeEnabled)
         config.zcodeStorageRoot = sections.value("sources.zcode", "storage_root", config.zcodeStorageRoot)
         return config
@@ -246,7 +252,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func syncNow() {
-        runShell("cd \(shellQuote(projectRoot)) && if [ -f ~/.config/work-journal-agent/secrets.env ]; then source ~/.config/work-journal-agent/secrets.env; fi; PYTHONPATH=src python3 -m work_journal_agent sync")
+        runShell("cd \(shellQuote(projectRoot)) && if [ -f ~/.config/work-journal-agent/secrets.env ]; then source ~/.config/work-journal-agent/secrets.env; fi; PYTHONPATH=src \(shellQuote(resolvedPythonExecutable)) -m work_journal_agent sync")
     }
 
     @objc private func openReview() {
@@ -266,7 +272,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func generateDaily() {
-        runShell("cd \(shellQuote(projectRoot)) && if [ -f ~/.config/work-journal-agent/secrets.env ]; then source ~/.config/work-journal-agent/secrets.env; fi; PYTHONPATH=src python3 -m work_journal_agent generate-daily")
+        runShell("cd \(shellQuote(projectRoot)) && if [ -f ~/.config/work-journal-agent/secrets.env ]; then source ~/.config/work-journal-agent/secrets.env; fi; PYTHONPATH=src \(shellQuote(resolvedPythonExecutable)) -m work_journal_agent generate-daily")
     }
 
     @objc private func openSettings() {
@@ -645,7 +651,7 @@ private final class PreferencesWindowController: NSWindowController, NSTextField
     }
 
     @objc private func runSetupWizard() {
-        runTerminal("cd \(shellQuote(projectRoot)) && PYTHONPATH=src python3 -m work_journal_agent setup")
+        runTerminal("cd \(shellQuote(projectRoot)) && PYTHONPATH=src \(shellQuote(resolvedPythonExecutable)) -m work_journal_agent setup")
     }
 
     @objc private func openConfigDirectory() {
@@ -1441,9 +1447,9 @@ private final class RequirementReviewStore: ObservableObject {
 
     private static func runPython(projectRoot: String, script: String, arguments: [String], input: Data? = nil) throws -> Data {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.executableURL = URL(fileURLWithPath: resolvedPythonExecutable)
         process.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
-        process.arguments = ["python3", "-c", script] + arguments
+        process.arguments = ["-c", pythonVersionGuardScript + script] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment.merge(loadSecretsEnvironment()) { _, new in new }
         environment["PYTHONPATH"] = "\(projectRoot)/src"
@@ -1467,8 +1473,9 @@ private final class RequirementReviewStore: ObservableObject {
         process.waitUntilExit()
 
         if process.terminationStatus != 0 {
-            let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw NSError(domain: "WorkJournalReview", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "python3 exited with \(process.terminationStatus)"])
+            let rawMessage = String(data: errorData, encoding: .utf8) ?? ""
+            let message = userFacingPythonError(rawMessage, fallback: "python3 exited with \(process.terminationStatus)")
+            throw NSError(domain: "WorkJournalReview", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
         }
         return output
     }
@@ -1526,11 +1533,105 @@ private func loadSecretsEnvironment() -> [String: String] {
     return result
 }
 
+private let pythonVersionGuardScript = """
+import sys
+if sys.version_info < (3, 11):
+    sys.stderr.write(f"Python 3.11+ is required; current python3 is {sys.version.split()[0]}\\n")
+    raise SystemExit(70)
+
+"""
+
+private let resolvedPythonExecutable = detectPythonExecutable()
+
+private func detectPythonExecutable() -> String {
+    let candidates = [
+        ProcessInfo.processInfo.environment["WJA_PYTHON"],
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+        "/usr/bin/python3",
+    ].compactMap { $0 }
+    for candidate in candidates where isSupportedPython(candidate) {
+        return candidate
+    }
+    return "/usr/bin/python3"
+}
+
+private func isSupportedPython(_ path: String) -> Bool {
+    guard FileManager.default.isExecutableFile(atPath: path) else {
+        return false
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = ["-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    do {
+        try process.run()
+    } catch {
+        return false
+    }
+    process.waitUntilExit()
+    return process.terminationStatus == 0
+}
+
+private func userFacingPythonError(_ rawMessage: String, fallback: String) -> String {
+    let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty else {
+        return fallback
+    }
+    if message.contains("Python 3.11+ is required") || message.contains("No module named 'tomllib'") {
+        return "Python 版本过低。Work Journal Agent 需要 Python 3.11+，请安装 Python 3.11 以上版本，并确认终端执行 python3 --version 显示 3.11 或更高。"
+    }
+    if message.contains("sqlite3.OperationalError: unable to open database file") || message.contains("unable to open database file") {
+        let databasePath = expandTilde(WorkJournalConfig.load().databasePath)
+        return "数据库无法打开：\(databasePath)。\(databaseAccessHint(databasePath))"
+    }
+    if message.contains("sqlite3.OperationalError: attempt to write a readonly database") || message.contains("attempt to write a readonly database") {
+        let databasePath = expandTilde(WorkJournalConfig.load().databasePath)
+        return "数据库只读：\(databasePath)。请确认数据库文件和所在目录归当前用户所有且可写。"
+    }
+    if message.contains("sqlite3.OperationalError: database is locked") || message.contains("database is locked") {
+        let databasePath = expandTilde(WorkJournalConfig.load().databasePath)
+        return "数据库被占用：\(databasePath)。请稍后重试，或关闭其他正在同步/写入 Work Journal 的进程。"
+    }
+    if message.contains("ModuleNotFoundError: No module named 'work_journal_agent'") {
+        return "Python 模块加载失败。请确认菜单栏 App 绑定的是 work-journal-agent 项目目录，并重新安装菜单栏应用。"
+    }
+    if message.contains("Traceback (most recent call last)") {
+        return compactPythonTraceback(message)
+    }
+    return message
+}
+
+private func compactPythonTraceback(_ message: String) -> String {
+    let lines = message
+        .split(whereSeparator: \.isNewline)
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    return lines.last ?? message
+}
+
+private func databaseAccessHint(_ databasePath: String) -> String {
+    let manager = FileManager.default
+    let parent = URL(fileURLWithPath: databasePath).deletingLastPathComponent().path
+    if !manager.fileExists(atPath: parent) {
+        return "数据库目录不存在，请先创建该目录，或在设置 > 路径中重新选择数据库。"
+    }
+    if !manager.isWritableFile(atPath: parent) {
+        return "数据库目录不可写，请修复目录权限，或在设置 > 路径中重新选择数据库。"
+    }
+    if manager.fileExists(atPath: databasePath) && !manager.isWritableFile(atPath: databasePath) {
+        return "数据库文件不可写，请修复文件权限，或在设置 > 路径中重新选择数据库。"
+    }
+    return "请确认 SQLite 数据库目录存在且当前用户可读写，或在设置 > 路径中重新选择数据库。"
+}
+
 private func runWorkJournalPython(projectRoot: String, script: String, arguments: [String], input: Data? = nil) throws -> Data {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.executableURL = URL(fileURLWithPath: resolvedPythonExecutable)
     process.currentDirectoryURL = URL(fileURLWithPath: projectRoot)
-    process.arguments = ["python3", "-c", script] + arguments
+    process.arguments = ["-c", pythonVersionGuardScript + script] + arguments
     var environment = ProcessInfo.processInfo.environment
     environment.merge(loadSecretsEnvironment()) { _, new in new }
     environment["PYTHONPATH"] = "\(projectRoot)/src"
@@ -1554,8 +1655,9 @@ private func runWorkJournalPython(projectRoot: String, script: String, arguments
     process.waitUntilExit()
 
     if process.terminationStatus != 0 {
-        let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw NSError(domain: "WorkJournalPython", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "python3 exited with \(process.terminationStatus)"])
+        let rawMessage = String(data: errorData, encoding: .utf8) ?? ""
+        let message = userFacingPythonError(rawMessage, fallback: "python3 exited with \(process.terminationStatus)")
+        throw NSError(domain: "WorkJournalPython", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
     }
     return output
 }
@@ -2993,7 +3095,7 @@ private struct WorkJournalSettingsView: View {
             }
             Spacer()
             Button("重新配置本机...") {
-                runTerminalCommand("cd \(shellQuote(projectRoot)) && PYTHONPATH=src python3 -m work_journal_agent setup")
+                runTerminalCommand("cd \(shellQuote(projectRoot)) && PYTHONPATH=src \(shellQuote(resolvedPythonExecutable)) -m work_journal_agent setup")
             }
             Button("打开配置目录") {
                 openDirectory(AppPaths.configPath.deletingLastPathComponent())
@@ -3183,6 +3285,9 @@ private struct WorkJournalSettingsView: View {
     private func save() {
         do {
             try FileManager.default.createDirectory(at: AppPaths.configPath.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard validateBeforeSave() else {
+                return
+            }
             if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try saveSecret(apiKey)
                 draft.apiKeyEnv = "DEEPSEEK_API_KEY"
@@ -3194,6 +3299,19 @@ private struct WorkJournalSettingsView: View {
         } catch {
             statusMessage = "保存失败：\(error.localizedDescription)"
         }
+    }
+
+    private func validateBeforeSave() -> Bool {
+        guard draft.kunEnabled else {
+            return true
+        }
+        let root = draft.kunProjectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        if root.isEmpty || isBundledProjectRoot(root) {
+            selectedSection = "paths"
+            statusMessage = "保存失败：请先选择真实 Kun 项目根目录"
+            return false
+        }
+        return true
     }
 
     private func saveApiKey() {
@@ -3426,6 +3544,18 @@ private func defaultOpenCodeEnabled() -> Bool {
 private func defaultKunEnabled() -> Bool {
     FileManager.default.fileExists(atPath: AppPaths.home.appendingPathComponent(".kun/data").path)
         || FileManager.default.fileExists(atPath: AppPaths.home.appendingPathComponent(".deepseekgui/kun").path)
+}
+
+private func defaultKunProjectRoot() -> String {
+    isBundledProjectRoot(AppPaths.projectRoot) ? "" : AppPaths.projectRoot
+}
+
+private func isBundledProjectRoot(_ value: String) -> Bool {
+    let path = expandTilde(value).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !path.isEmpty else {
+        return false
+    }
+    return path.contains(".app/Contents/Resources/project")
 }
 
 private func defaultZCodeEnabled() -> Bool {
