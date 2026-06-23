@@ -1,65 +1,55 @@
 # work-journal-agent
 
-本地优先的工作日志代理，用来把 Codex、OpenCode、Claude Code、手动标记和 Git 证据整理成 Obsidian 工作笔记。
+本地优先的工作日志助手。它把 Codex、OpenCode、Claude Code、Kun、
+ZCode 和手动记录里的工作事件，整理成 Obsidian Daily、任务详情和
+长期需求资产。
 
-它的目标不是保存完整聊天记录，而是沉淀任务资产：原始需求、讨论方案、最终结论、产出和后续。
+它的目标不是保存完整聊天记录，而是沉淀每天真正有用的信息：
+
+- 原始需求和讨论结论。
+- 代码、文档、SQL 等关键产出。
+- 待确认问题、风险和后续计划。
+- 可复用的需求标题和跨天需求线索。
 
 ## 适合谁
 
-- 同时使用 Codex、OpenCode、Claude Code 或其他本地 Agent 工具。
-- 希望每天自动生成 Obsidian 工作记录。
-- 希望在多台个人设备上安装使用，同时也能分享给别人。
+- 同时使用多个 AI 编程工具，需要统一沉淀工作记录。
+- 希望每天自动生成 Obsidian 工作日报。
+- 希望把零散对话整理成可追踪的需求和任务。
+- 希望数据保存在本机，不依赖云端工作台。
 
-## 安装
+## 主要功能
+
+- **自动采集**：读取 Codex、OpenCode、Claude Code、Kun、ZCode 等本地
+  Agent 事件。
+- **AI 整理**：可选 DeepSeek，把事件整理成任务摘要、结论、影响和证据。
+- **Obsidian 输出**：生成 `Daily/YYYY-MM-DD.md` 和
+  `Tasks/YYYY-MM-DD/需求标题.md`。
+- **需求确认**：菜单栏 App 支持改标题、确认、忽略、归并已有需求。
+- **历史补生成**：最近 7 天内可以补确认、补生成指定日期日报。
+- **本地存储**：事件、确认结果、AI 缓存和状态都写入本机 SQLite。
+- **后台同步**：macOS 可通过 launchd 定时导入事件并刷新当天日报。
+
+## 快速开始
 
 内部试用 macOS 版可以直接下载 Release 里的 DMG：
 
 1. 打开 [GitHub Releases](https://github.com/shaoyang01/work-journal-agent/releases)。
 2. 下载 `Work-Journal-Agent-版本号.dmg`。
 3. 打开 DMG，把 `Work Journal Agent.app` 拖到 Applications。
-4. 首次打开如果提示无法验证开发者，请在 系统设置 -> 隐私与安全性 中允许打开。
-5. 点击顶部菜单栏 `WJ` 图标，进入设置窗口配置 Obsidian、Agent 数据源和 DeepSeek。
+4. 首次打开如果提示无法验证开发者，在系统设置的隐私与安全性里允许打开。
+5. 点击顶部菜单栏 `WJ` 图标，进入设置窗口配置 Obsidian、数据源和 AI。
 
-这个 DMG 是未公证的内部试用包，适合同事先体验；正式分发前还需要 Apple Developer 签名和 notarization。
-
-macOS 最简单方式：在 Finder 里双击：
+也可以在源码目录双击：
 
 ```text
 Install.command
 ```
 
-它会自动安装工具，并用中文询问 Obsidian 路径、是否启用 DeepSeek、是否配置 Claude Code hooks、是否安装后台自动写入器。
-
-源码目录内也可以运行启动脚本：
-
-macOS/Linux：
+或使用命令安装：
 
 ```bash
 ./scripts/install.sh
-```
-
-Windows PowerShell：
-
-```powershell
-.\scripts\start.ps1
-```
-
-如果想接受默认值快速初始化：
-
-```bash
-./scripts/install.sh --yes
-```
-
-开发安装：
-
-```bash
-python -m pip install -e .
-```
-
-如果你使用 `uv`：
-
-```bash
-uv tool install .
 ```
 
 安装后会得到两个等价命令：
@@ -69,548 +59,48 @@ wj --help
 work-journal-agent --help
 ```
 
-## 配置
-
-安装后也可以直接运行配置向导：
+## 常用入口
 
 ```bash
+# 导入当天事件并刷新今天的需求候选
+wj sync
+
+# 手动生成某天日报
+wj generate-daily --date 2026-06-22
+
+# 记录一条临时事件
+wj note "完成历史日报补生成能力"
+
+# 打开配置向导
 wj setup
 ```
 
-配置向导会询问：
-
-- 配置文件路径。
-- SQLite 数据库文件路径。
-- Obsidian vault 路径。
-- Daily / Tasks 目录名；Tasks 详情笔记会随日报默认生成。
-- Knowledge 目录名。
-- 是否生成或更新知识专题笔记。
-- 是否启用 DeepSeek AI 分析；启用时会继续询问 API Key，并保存到本机私有 `secrets.env`。
-- 如果不启用 DeepSeek，则使用本地规则摘要。
-- 是否启用 Codex 采集；启用后会询问 sessions 根目录。
-- 是否启用 Claude Code 采集 hooks；启用后才会询问 settings.json 路径。
-- 是否启用 OpenCode 采集插件；启用后才会询问插件保存路径。
-- 是否启用 Kun Agent 采集；启用后会询问 Kun 本地数据目录和项目根目录。
-- 是否启用 ZCode 采集；启用后会询问 ZCode 本地数据目录。
-
-手动配置方式如下。
-
-复制配置模板：
-
-```bash
-mkdir -p ~/.config/work-journal-agent
-cp config/config.example.toml ~/.config/work-journal-agent/config.toml
-```
-
-Windows 可以放到：
-
-```text
-%APPDATA%\work-journal-agent\config.toml
-```
-
-最小配置：
-
-```toml
-[storage]
-database_path = "~/.local/share/work-journal-agent/work-journal.db"
-output_dir = "./out"
-
-[obsidian]
-vault_path = "/path/to/your/ObsidianVault"
-daily_dir = "Daily"
-task_dir = "Tasks"
-write_task_notes = true
-```
-
-`vault_path` 留空时，会写到 `storage.output_dir`，方便先试跑。
-每日生成时会同时写入 `Daily/YYYY-MM-DD.md` 和 `Tasks/YYYY-MM-DD/需求标题.md`。
-
-## 旧数据迁移
-
-升级到 SQLite 存储后，Work Journal 自身的新数据会写入 `storage.database_path`。如果本机已有旧版 JSON/JSONL 数据，可以执行一次迁移：
-
-```bash
-wj migrate-storage
-```
-
-默认会从旧版本机目录读取：
-
-```text
-~/.local/share/work-journal-agent/inbox/events.jsonl
-~/.local/share/work-journal-agent/requirements/
-~/.local/share/work-journal-agent/state/status.json
-~/.local/share/work-journal-agent/ai-cache/
-```
-
-如果旧数据在自定义位置，可以显式指定：
-
-```bash
-wj migrate-storage \
-  --legacy-inbox /path/to/events.jsonl \
-  --legacy-requirements-dir /path/to/requirements \
-  --legacy-state-dir /path/to/state \
-  --legacy-ai-cache-dir /path/to/ai-cache
-```
-
-迁移命令是幂等的，重复执行不会重复写入事件；已确认需求和缓存会按同一主键覆盖到 SQLite。
-
-## 手动记录事件
-
-日常临时记一条，优先用短命令：
-
-```bash
-wj note "今天完成了 work-journal-agent 的自动采集和后台写入"
-```
-
-更完整的事件命令仍然保留：
-
-```bash
-wj event add \
-  --source codex \
-  --type conclusion \
-  --summary "确定采用 SQLite 本地存储方案" \
-  --decision "第一版先做本地 CLI，不做后台服务"
-```
-
-记录文件产出：
-
-```bash
-wj event add \
-  --source manual \
-  --type note \
-  --summary "补充 README 安装说明" \
-  --file README.md
-```
-
-## 生成每日笔记
-
-正常情况下不需要手动运行，macOS 会通过 `launchd` 后台定期执行：
-
-```bash
-wj sync
-```
-
-它会先导入已启用来源的当天事件，包括 Codex session、OpenCode 本地事件、Kun Agent 本地数据和 ZCode 本地会话，再生成今天的 Obsidian Daily。Knowledge 不会在 `wj sync` 中生成，避免日报和知识沉淀共用一次长时间等待。
-
-手动预览：
-
-```bash
-wj sync --date 2026-06-11 --dry-run
-```
-
-写入 Obsidian 或 fallback 输出目录：
-
-```bash
-wj sync --date 2026-06-11
-```
-
-实验性代码库知识生成默认关闭。只有同时开启 `[ai].knowledge_enabled` 和 `[obsidian].write_knowledge_notes` 后，才会单独生成 Knowledge：
-
-```bash
-wj generate-knowledge --date 2026-06-11
-```
-
-当前建议保持关闭，等知识沉淀策略明确后再启用。
-
-## 需求确认与菜单栏 App
-
-如果 Daily 里出现文件路径式标题，或同一个需求跨 Claude/Codex 多轮方案、实现、review，可以用 macOS 顶部菜单栏 App 直接弹出原生确认窗口：
+macOS 菜单栏 App 可以通过脚本安装或重建：
 
 ```bash
 scripts/install-menubar.sh
 ```
 
-安装后顶部状态栏会出现 `WJ`。点击菜单可以：
+顶部状态栏出现 `WJ` 后，可以打开最近 7 天日报/确认、需求管理、设置、
+日志和本地数据目录。
 
-- 打开今日需求确认窗口
-- 同步最新事件
-- 生成今日日报
-- 打开设置窗口
-- 打开本地数据目录和日志
+## 文档
 
-如果只想生成一个可双击的本机测试版，不安装到 `~/Applications`，可以构建到 `dist/`：
+- [配置指导](docs/configuration.md)：安装、配置文件、数据源、DeepSeek、
+  后台同步和卸载。
+- [使用指南](docs/usage.md)：日常命令、菜单栏 App、需求确认、历史日报、
+  Knowledge、验证和多设备建议。
 
-```bash
-scripts/build-local-app.sh
-```
+## 数据与隐私
 
-然后在 Finder 里双击：
-
-```text
-dist/Work Journal Agent.app
-```
-
-这个本机测试版会绑定当前仓库路径，并调用当前仓库下的 Python CLI。移动仓库后需要重新构建。
-
-构建可分享的内部试用 DMG：
-
-```bash
-scripts/build-dmg.sh
-```
-
-产物会写到：
-
-```text
-dist/Work-Journal-Agent-版本号.dmg
-```
-
-DMG 内的 App 会内置当前版本源码，不要求试用者先 clone 仓库；但仍依赖试用者本机有 `python3`。
-
-菜单栏 App 不启动本地 HTTP 服务，也不打开浏览器。它通过 CLI JSON 通道调用本地核心逻辑：
-
-```bash
-wj requirements payload --date 2026-06-12
-wj requirements save --date 2026-06-12
-wj app config
-wj app config-save
-wj app status
-```
-
-确认窗口会列出当天候选需求，支持改标题、确认、标记待确认或忽略。保存后会写入本机 SQLite 数据库：
-
-```text
-~/.local/share/work-journal-agent/work-journal.db
-```
-
-后续 `wj generate-daily` 会优先使用已确认的需求标题。
-
-本地 HTML 确认页仍保留为调试入口，需要时可手动启动：
-
-```bash
-wj requirements review --date 2026-06-12
-```
-
-## OpenCode 采集
-
-安装向导默认会询问是否配置 OpenCode 采集插件。启用后会生成：
-
-```text
-~/.config/opencode/plugins/work-journal-agent.js
-```
-
-OpenCode 启动时会自动加载这个插件，插件会把消息、工具执行、文件变更、session diff 等事件写入 work-journal-agent。重复运行 `wj setup` 会刷新这个插件文件。
-
-导入当天 OpenCode 本地事件：
-
-```bash
-wj opencode import --date 2026-06-11
-```
-
-默认读取：
-
-```text
-~/.local/share/opencode/storage
-```
-
-也可以指定路径：
-
-```bash
-wj opencode import --storage-root /path/to/opencode/storage
-```
-
-如果你写 OpenCode 插件，可以把插件事件 JSON 通过 stdin 交给：
-
-```bash
-wj opencode hook
-```
-
-采集器只保存工作日志需要的摘要、文件列表、工具名和会话标识；不会把 OpenCode diff 的 before/after 全量内容写入 inbox。
-
-卸载时会删除由 work-journal-agent 生成的 OpenCode 插件：
-
-```bash
-wj uninstall
-```
-
-如果安装时用了自定义插件路径，卸载时可以指定：
-
-```bash
-wj uninstall --opencode-plugin /path/to/work-journal-agent.js
-```
-
-## Kun Agent 采集
-
-Kun Agent 采集默认关闭。开启后，`wj sync` 会读取 Kun 本地 threads 和当前项目的 `.kunsdd` 文档，导入用户需求、结论、工具/文件事件和需求文档摘要。采集器使用稳定 key 去重，重复运行不会重复写入 inbox。
-
-配置文件示例：
-
-```toml
-[sources.kun]
-enabled = true
-storage_root = "~/.kun/data"
-project_root = "/path/to/project"
-```
-
-也可以在顶部菜单栏 App 的设置窗口里开启 Kun，配置 Kun 本地数据目录和 Kun 项目根目录。
-
-手动导入当天 Kun 事件：
-
-```bash
-wj kun import --date 2026-06-11
-```
-
-如果 Kun 安装路径不同，可以显式指定：
-
-```bash
-wj kun import --storage-root /path/to/kun --project-root /path/to/project
-```
-
-## ZCode 采集
-
-ZCode 采集默认会在检测到 `~/.zcode/cli` 时启用。采集器只读本地 sqlite 数据库，导入用户需求、助手结论、工具执行和 session 文件变更摘要；不会读取完整 rollout 请求体，避免把 system prompt、headers 和完整上下文写入 inbox。
-
-配置文件示例：
-
-```toml
-[sources.zcode]
-enabled = true
-storage_root = "~/.zcode/cli"
-```
-
-也可以在顶部菜单栏 App 的设置窗口里开启 ZCode，配置 ZCode 本地数据目录。
-
-手动导入当天 ZCode 事件：
-
-```bash
-wj zcode import --date 2026-06-11
-```
-
-如果 ZCode 安装路径不同，可以显式指定：
-
-```bash
-wj zcode import --storage-root /path/to/.zcode/cli
-```
-
-## 后台自动写入
-
-macOS 下配置向导会询问是否安装后台自动写入器。开启后会创建：
-
-```text
-~/Library/LaunchAgents/com.shaoyang01.work-journal-agent.daily.plist
-```
-
-默认每 60 分钟刷新一次今天的 Daily，电脑重启并登录后会自动恢复。
-如果启用了 DeepSeek，后台任务会自动加载：
-
-```text
-~/.config/work-journal-agent/secrets.env
-```
-
-这个文件权限会设置为 `600`，不要提交到 Git。
-
-## DeepSeek AI 分析
-
-安装向导会询问是否启用 DeepSeek AI 分析：
-
-```text
-是否启用 DeepSeek AI 分析，让它帮助整理每日工作摘要
-```
-
-如果选择启用，可以直接输入 API Key。它会写入本机私有文件：
-
-```text
-~/.config/work-journal-agent/secrets.env
-```
-
-如果机器上已经有 `DEEPSEEK_API_KEY` 环境变量，也可以在安装器询问 API Key 时直接回车使用现有环境变量。
-
-```bash
-export DEEPSEEK_API_KEY="你的 key"
-```
-
-配置文件中对应开关：
-
-```toml
-[ai]
-enabled = true
-provider = "deepseek"
-base_url = "https://api.deepseek.com"
-model = "deepseek-v4-pro"
-api_key_env = "DEEPSEEK_API_KEY"
-timeout_seconds = 180
-cache_enabled = true
-cache_retention_days = 7
-cluster_review_enabled = true
-cluster_review_timeout_seconds = 240
-cluster_review_min_confidence = 0.75
-knowledge_enabled = false
-```
-
-DeepSeek 只会收到已经筛选压缩过的任务事件，不会上传完整 Codex/Claude/OpenCode 聊天全文。AI 结果默认按天缓存在本机 SQLite 数据库中，保留最近 7 天；如果任务没有新增事件，会复用缓存而不重复调用 DeepSeek。
-
-启用 `cluster_review_enabled` 后，今日需求确认和生成 Daily 前都会先让 DeepSeek 审查规则聚类结果。带 `session_id` 的 agent 事件会先按会话拆开，再由 DeepSeek 判断哪些会话属于同一需求；高置信度建议会自动合并同一任务或拆分误合并任务；低置信度、返回异常或调用失败时保持本地规则聚类结果，确认页和日报仍会正常生成。`cluster_review_timeout_seconds` 只控制需求聚类复核，普通摘要仍使用 `timeout_seconds`。
-
-DeepSeek 摘要还会识别重要产出：把“修改了哪些文件”提升为“真正完成了什么”，并在 Daily 中展示影响、验证证据和关键产物路径。旧缓存或旧模型只返回 `outputs` 时，会自动按旧字段回退展示。
-
-Knowledge 生成功能目前是实验性能力，默认关闭。只有开启 `[ai].knowledge_enabled = true` 且 `[obsidian].write_knowledge_notes = true` 时，`wj generate-knowledge` 才会调用 DeepSeek；关闭时不会调用 DeepSeek，也不会执行本地 Knowledge 兜底写入。
-
-已经安装过之后，也可以只配置 DeepSeek：
-
-```bash
-wj ai setup
-```
-
-它会询问 API Key，并自动完成：
-
-- 写入 `~/.config/work-journal-agent/secrets.env`
-- 开启配置文件里的 `[ai].enabled`
-- 重新安装后台自动同步任务
-
-关闭 DeepSeek 辅助总结：
-
-```bash
-wj ai disable
-```
-
-手动安装或重装：
-
-```bash
-wj schedule install --every-minutes 60
-```
-
-查看状态：
-
-```bash
-wj schedule status
-```
-
-卸载后台任务：
-
-```bash
-wj schedule uninstall
-```
-
-## Codex 自动采集
-
-Codex 当前通过本地 session 日志导入，不需要 hook：
-
-```text
-~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
-```
-
-后台 `wj sync` 会自动导入当天新增的 Codex 用户需求、最终回复和 patch 文件事件。导入使用稳定 key 去重，重复运行不会重复写入 inbox。
-
-## 本地验证
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests
-```
-
-## Claude Code Hooks
-
-安装 CLI 后，可以在 Claude Code settings 中配置 hook。
-
-macOS/Linux 示例：
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh UserPromptSubmit"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh PostToolUse"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/work-journal-agent/hooks/claude/hook.sh Stop"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Windows PowerShell 示例：
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -ExecutionPolicy Bypass -File C:\\path\\to\\work-journal-agent\\hooks\\claude\\hook.ps1 UserPromptSubmit"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-hook 只写轻量事件，不会把 transcript 全量写入 Obsidian。
-
-## 卸载
-
-macOS 最简单方式：在 Finder 里双击：
-
-```text
-Uninstall.command
-```
-
-它会询问是否同时删除配置和历史数据。
-
-macOS/Linux：
-
-```bash
-./scripts/uninstall.sh
-```
-
-Windows PowerShell：
-
-```powershell
-.\scripts\uninstall.ps1
-```
-
-默认卸载会移除：
-
-- launchd 后台任务。
-- Claude Code settings 里的 work-journal-agent hooks。
-- Python 包安装。
-
-默认保留配置和历史数据。需要一起删除时：
-
-```bash
-./scripts/uninstall.sh --remove-config --remove-data
-```
-
-## 多设备使用建议
-
-- 项目代码用 Git 同步。
-- 每台设备维护自己的 `~/.config/work-journal-agent/config.toml`。
-- Obsidian vault 可以用 iCloud、Syncthing、Git 或 Obsidian Sync 同步。
-- SQLite 数据库默认在本机用户目录，不建议提交到仓库。
+- 默认数据库在 `~/.local/share/work-journal-agent/work-journal.db`。
+- DeepSeek 只接收筛选压缩后的任务事件，不上传完整聊天全文。
+- AI 缓存默认保留最近 7 天。
+- Obsidian vault 可自行用 iCloud、Git、Obsidian Sync 等方式同步。
 
 ## 当前边界
 
-第一版使用确定性规则归并任务：
-
-- 同一天。
-- 同 repo/cwd。
-- 文件重叠或关键词重叠。
-
-暂不做云端服务、Notion/飞书输出和 GUI。
+- 目前是本地工具，不提供云端服务。
+- DMG 是未公证的内部试用包，正式分发前仍需要 Apple Developer 签名和
+  notarization。
+- Knowledge 生成功能仍是实验性能力，默认关闭。
