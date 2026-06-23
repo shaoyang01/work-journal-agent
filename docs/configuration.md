@@ -3,6 +3,8 @@
 本文档说明如何安装 Work Journal Agent、配置 Obsidian、数据源、DeepSeek
 和后台自动同步。
 
+![本地配置台连接 Obsidian、SQLite、数据源和可选 AI](../assets/work-journal-agent-illustrations/02-configuration-local-workbench.png)
+
 ## 安装
 
 ### macOS DMG

@@ -6,6 +6,8 @@ ZCode 和手动记录里的工作事件，整理成 Obsidian Daily、任务详�
 
 它的目标不是保存完整聊天记录，而是沉淀每天真正有用的信息：
 
+![Work Journal Agent 将多来源事件筛选成本机 Daily 和 Tasks 笔记](assets/work-journal-agent-illustrations/01-readme-overview.png)
+
 - 原始需求和讨论结论。
 - 代码、文档、SQL 等关键产出。
 - 待确认问题、风险和后续计划。

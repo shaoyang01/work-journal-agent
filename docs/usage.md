@@ -3,6 +3,8 @@
 本文档说明 Work Journal Agent 的日常使用方式，包括手动记录、同步、日报
 生成、需求确认、菜单栏 App 和本地验证。
 
+![最近 7 天内确认历史需求并补生成对应日期日报](../assets/work-journal-agent-illustrations/03-usage-seven-day-daily.png)
+
 ## 手动记录事件
 
 临时记一条工作日志：
