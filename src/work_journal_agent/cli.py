@@ -11,7 +11,7 @@ from typing import Any
 from .config import default_data_dir, load_config
 from .events import WorkEvent, append_event, read_events, truncate_text
 from .event_semantics import enrich_task_semantics
-from .ai_run_tracker import TaskRunAlreadyActive, ensure_no_active_task_run, track_ai_task_run
+from .ai_run_tracker import TaskRunAlreadyActive, track_ai_task_run
 from .gui_config import build_app_status, build_config_payload, json_from_stdin, save_config_payload
 from .merge import group_events
 from .requirements import apply_requirement_assignments, build_review_payload, filter_ignored_events, load_review_payload, merge_confirmed_requirement_tasks, merge_requirement_threads, refresh_requirement_candidates, save_review_decisions
@@ -290,12 +290,6 @@ def cmd_generate_knowledge(args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    if not args.dry_run:
-        try:
-            ensure_no_active_task_run(config)
-        except TaskRunAlreadyActive as exc:
-            print(exc)
-            return
     codex_result = empty_import_result("codex")
     if config.sources.codex.enabled:
         codex_root = config.sources.codex.sessions_root
@@ -346,15 +340,15 @@ def cmd_sync(args: argparse.Namespace) -> None:
         print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
         print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
         return
+    print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
+    print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
+    print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
+    print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
     try:
         payload = refresh_requirement_candidates(config, args.date, fail_if_active=True)
     except TaskRunAlreadyActive as exc:
         print(exc)
         return
-    print(f"Imported Codex events: {codex_result.imported_events} from {codex_result.scanned_files} files")
-    print(f"Imported OpenCode events: {opencode_result.imported_events} from {opencode_result.scanned_files} files")
-    print(f"Imported Kun events: {kun_result.imported_events} from {kun_result.scanned_files} files")
-    print(f"Imported ZCode events: {zcode_result.imported_events} from {zcode_result.scanned_files} files")
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     semantic_message = str(summary.get("semantic_summary") or "")
     cluster_message = str(summary.get("cluster_review") or "")

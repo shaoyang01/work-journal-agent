@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "work-journal-agent"
-version = "0.12.1"
+version = "0.12.2"
 description = "Local-first work journal collector for Codex, OpenCode, Claude Code, Git, and Obsidian."
 readme = "README.md"
 requires-python = ">=3.11"

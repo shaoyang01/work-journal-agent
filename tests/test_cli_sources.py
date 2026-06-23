@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from work_journal_agent.ai_run_tracker import TaskRunAlreadyActive
 from work_journal_agent.cli import main
 from work_journal_agent.sources.codex import CodexImportResult
 from work_journal_agent.sources.opencode import OpenCodeImportResult
@@ -45,6 +46,22 @@ class CliSourcesTests(unittest.TestCase):
                     main(["--config", str(config_path), "sync", "--date", "2026-06-12", "--dry-run"])
 
             knowledge.assert_not_called()
+
+    def test_sync_imports_events_even_when_requirement_refresh_is_busy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = write_config(Path(temp_dir), codex_enabled=True, opencode_enabled=False)
+            active_run = {"id": "run-1", "run_kind": "requirement_review"}
+
+            with patch("work_journal_agent.cli.import_codex_events", return_value=CodexImportResult(scanned_files=1, imported_events=2)) as codex, patch(
+                "work_journal_agent.cli.refresh_requirement_candidates", side_effect=TaskRunAlreadyActive(active_run)
+            ):
+                with redirect_stdout(StringIO()) as stdout:
+                    main(["--config", str(config_path), "sync", "--date", "2026-06-12"])
+
+            codex.assert_called_once()
+            output = stdout.getvalue()
+            self.assertIn("Imported Codex events: 2 from 1 files", output)
+            self.assertIn("已有任务正在执行：requirement_review run-1", output)
 
     def test_generate_knowledge_uses_separate_command_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -101,6 +118,12 @@ def write_config(base: Path, *, codex_enabled: bool, opencode_enabled: bool, kno
                 f"enabled = {str(opencode_enabled).lower()}",
                 'storage_root = "opencode"',
                 'plugin_path = "opencode-plugin.js"',
+                "",
+                "[sources.kun]",
+                "enabled = false",
+                "",
+                "[sources.zcode]",
+                "enabled = false",
                 "",
             ]
         ),

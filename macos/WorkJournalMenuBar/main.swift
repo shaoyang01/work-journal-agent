@@ -28,6 +28,44 @@ private enum AppPaths {
     }
 }
 
+private let workJournalLaunchAgentLabel = "com.shaoyang01.work-journal-agent.daily"
+
+private func ensureBackgroundSchedule(projectRoot: String) {
+    guard FileManager.default.fileExists(atPath: AppPaths.configPath.path) else {
+        return
+    }
+    DispatchQueue.global(qos: .utility).async {
+        if launchAgentIsLoaded() {
+            return
+        }
+        let command = "cd \(shellQuote(projectRoot)) && PYTHONPATH=src \(shellQuote(resolvedPythonExecutable)) -m work_journal_agent schedule install --every-minutes 60"
+        runDetachedShell(command)
+    }
+}
+
+private func launchAgentIsLoaded() -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    process.arguments = ["print", "gui/\(getuid())/\(workJournalLaunchAgentLabel)"]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    do {
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    } catch {
+        return false
+    }
+}
+
+private func runDetachedShell(_ command: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    let loggedCommand = "echo '[Work Journal Agent] ensuring background schedule' >>/tmp/work-journal-agent-menubar.log; \(command) >>/tmp/work-journal-agent-menubar.log 2>&1 &"
+    process.arguments = ["-lc", loggedCommand]
+    try? process.run()
+}
+
 private struct WorkJournalConfig {
     var databasePath = "~/.local/share/work-journal-agent/work-journal.db"
     var inboxPath = "~/.local/share/work-journal-agent/inbox/events.jsonl"
@@ -194,6 +232,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             button.toolTip = "Work Journal Agent"
         }
         rebuildMenu()
+        ensureBackgroundSchedule(projectRoot: projectRoot)
         if ProcessInfo.processInfo.arguments.contains("--open-review") {
             DispatchQueue.main.async { [weak self] in
                 self?.openReview()
@@ -3295,7 +3334,8 @@ private struct WorkJournalSettingsView: View {
             }
             try draft.toml().write(to: AppPaths.configPath, atomically: true, encoding: .utf8)
             createRuntimeDirectories(for: draft)
-            statusMessage = "已保存配置"
+            ensureBackgroundSchedule(projectRoot: projectRoot)
+            statusMessage = "已保存配置，正在确保后台自动同步"
         } catch {
             statusMessage = "保存失败：\(error.localizedDescription)"
         }
