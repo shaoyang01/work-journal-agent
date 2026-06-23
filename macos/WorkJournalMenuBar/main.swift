@@ -226,7 +226,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Work Journal", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(item("今日需求确认...", #selector(openReview)))
+        menu.addItem(item("最近 7 天日报/确认...", #selector(openReview)))
         menu.addItem(item("需求管理...", #selector(openRequirementManager)))
         menu.addItem(item("同步最新事件", #selector(syncNow)))
         menu.addItem(item("生成今日日报", #selector(generateDaily)))
@@ -1186,13 +1186,16 @@ private struct RequirementSearchComboBox: NSViewRepresentable {
 }
 
 private final class RequirementReviewStore: ObservableObject {
+    static let historyDayCount = 7
+
     @Published var candidates: [NativeReviewCandidate] = []
     @Published var requirements: [NativeRequirementOption] = []
     @Published var summary = NativeReviewSummary(totalCandidates: 0, pendingCandidates: 0, eventCount: 0)
     @Published var statusMessage = "准备载入"
     @Published var isLoading = false
+    @Published var hasUnsavedChanges = false
+    @Published var dayText: String
 
-    let dayText: String
     private let projectRoot: String
 
     init(projectRoot: String) {
@@ -1200,9 +1203,33 @@ private final class RequirementReviewStore: ObservableObject {
         self.dayText = RequirementReviewStore.todayText()
     }
 
+    var availableDayTexts: [String] {
+        (0..<Self.historyDayCount).reversed().map { Self.offsetDayText(Self.todayText(), days: -$0) }
+    }
+
+    var oldestDayText: String {
+        availableDayTexts.first ?? Self.todayText()
+    }
+
+    var newestDayText: String {
+        availableDayTexts.last ?? Self.todayText()
+    }
+
+    var canLoadPreviousDay: Bool {
+        dayText > oldestDayText
+    }
+
+    var canLoadNextDay: Bool {
+        dayText < newestDayText
+    }
+
     func reload() {
+        guard !hasUnsavedChanges else {
+            statusMessage = "请先保存确认结果再刷新"
+            return
+        }
         isLoading = true
-        statusMessage = "正在读取今日事件..."
+        statusMessage = "正在读取 \(dayText) 事件..."
         let root = projectRoot
         let day = dayText
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1212,7 +1239,8 @@ private final class RequirementReviewStore: ObservableObject {
                     self.summary = payload.summary
                     self.candidates = payload.candidates
                     self.requirements = payload.requirements
-                    self.statusMessage = payload.candidates.isEmpty ? "今天暂无候选需求" : "已载入 \(payload.candidates.count) 个候选需求"
+                    self.statusMessage = payload.candidates.isEmpty ? "\(day) 暂无候选需求" : "已载入 \(day) 的 \(payload.candidates.count) 个候选需求"
+                    self.hasUnsavedChanges = false
                     self.isLoading = false
                 }
             } catch {
@@ -1222,6 +1250,34 @@ private final class RequirementReviewStore: ObservableObject {
                 }
             }
         }
+    }
+
+    func loadPreviousDay() {
+        loadDay(Self.offsetDayText(dayText, days: -1))
+    }
+
+    func loadNextDay() {
+        loadDay(Self.offsetDayText(dayText, days: 1))
+    }
+
+    func loadToday() {
+        loadDay(Self.todayText())
+    }
+
+    func loadDay(_ day: String) {
+        guard availableDayTexts.contains(day) else {
+            statusMessage = "仅支持最近 \(Self.historyDayCount) 天"
+            return
+        }
+        guard !hasUnsavedChanges else {
+            statusMessage = "请先保存确认结果再切换日期"
+            return
+        }
+        dayText = day
+        candidates = []
+        requirements = []
+        summary = NativeReviewSummary(totalCandidates: 0, pendingCandidates: 0, eventCount: 0)
+        reload()
     }
 
     func save() {
@@ -1250,6 +1306,7 @@ private final class RequirementReviewStore: ObservableObject {
                     self.candidates = payload.candidates
                     self.requirements = payload.requirements
                     self.statusMessage = "已保存确认结果"
+                    self.hasUnsavedChanges = false
                     self.isLoading = false
                 }
             } catch {
@@ -1261,9 +1318,47 @@ private final class RequirementReviewStore: ObservableObject {
         }
     }
 
+    func generateDaily() {
+        guard !hasUnsavedChanges else {
+            statusMessage = "请先保存确认结果再生成日报"
+            return
+        }
+        isLoading = true
+        statusMessage = "正在生成 \(dayText) 日报..."
+        let root = projectRoot
+        let day = dayText
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let output = try Self.generateDaily(projectRoot: root, dayText: day)
+                DispatchQueue.main.async {
+                    let target = String(data: output, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .split(whereSeparator: \.isNewline)
+                        .last
+                    if let target, !target.isEmpty {
+                        self.statusMessage = "已生成日报：\(target)"
+                    } else {
+                        self.statusMessage = "已生成 \(day) 日报"
+                    }
+                    self.isLoading = false
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.statusMessage = "生成失败：\(error.localizedDescription)"
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
     func setStatus(_ id: String, status: String) {
         guard let index = candidates.firstIndex(where: { $0.id == id }) else { return }
         candidates[index].status = status
+        markUnsaved()
+    }
+
+    func markUnsaved() {
+        hasUnsavedChanges = true
         statusMessage = "有未保存修改"
     }
 
@@ -1275,17 +1370,17 @@ private final class RequirementReviewStore: ObservableObject {
             if !suggestedTitle.isEmpty {
                 candidates[index].title = suggestedTitle
             }
-            statusMessage = "有未保存修改"
+            markUnsaved()
             return
         }
         guard let requirement = requirements.first(where: { $0.id == requirementId }) else {
-            statusMessage = "有未保存修改"
+            markUnsaved()
             return
         }
         candidates[index].title = requirement.title
         candidates[index].project = requirement.project
         candidates[index].requirementType = requirement.requirementType
-        statusMessage = "有未保存修改"
+        markUnsaved()
     }
 
     func requirementOptions(for project: String) -> [NativeRequirementOption] {
@@ -1334,6 +1429,16 @@ private final class RequirementReviewStore: ObservableObject {
         _ = try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [dayText], input: input)
     }
 
+    private static func generateDaily(projectRoot: String, dayText: String) throws -> Data {
+        let script = """
+        import sys
+        from work_journal_agent.cli import main
+
+        main(["generate-daily", "--date", sys.argv[1]])
+        """
+        return try runWorkJournalPython(projectRoot: projectRoot, script: script, arguments: [dayText])
+    }
+
     private static func runPython(projectRoot: String, script: String, arguments: [String], input: Data? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -1374,6 +1479,18 @@ private final class RequirementReviewStore: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date())
+    }
+
+    private static func offsetDayText(_ value: String, days: Int) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: value),
+              let shifted = formatter.calendar.date(byAdding: .day, value: days, to: date) else {
+            return todayText()
+        }
+        return formatter.string(from: shifted)
     }
 }
 
@@ -2077,7 +2194,7 @@ private struct RequirementReviewView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Work Journal")
                     .font(.system(size: 18, weight: .bold))
-                Text("需求确认")
+                Text("最近 7 天")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondaryText)
             }
@@ -2091,6 +2208,18 @@ private struct RequirementReviewView: View {
                 filterButton("ignored", title: "已忽略", symbol: "xmark.circle", count: store.candidates.filter { $0.status == "ignored" }.count)
             }
             .padding(.top, 42)
+            .padding(.horizontal, 14)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("历史日期")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.mutedText)
+                    .padding(.horizontal, 8)
+                ForEach(store.availableDayTexts, id: \.self) { day in
+                    dayButton(day)
+                }
+            }
+            .padding(.top, 26)
             .padding(.horizontal, 14)
 
             Spacer()
@@ -2110,9 +2239,9 @@ private struct RequirementReviewView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("今日需求确认")
+                Text("历史需求确认")
                     .font(.system(size: 26, weight: .bold))
-                Text("把今天采集到的 Agent 事件归并成候选需求，在本机确认后再用于日报。")
+                Text("最近 7 天内可补确认、补生成日报；日报仍按事件发生日期归档。")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Theme.secondaryText)
                 Text("日期：\(store.dayText)")
@@ -2120,6 +2249,31 @@ private struct RequirementReviewView: View {
                     .foregroundStyle(Theme.secondaryText)
             }
             Spacer()
+            HStack(spacing: 8) {
+                Button {
+                    store.loadPreviousDay()
+                } label: {
+                    Label("前一天", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!store.canLoadPreviousDay || store.isLoading)
+
+                Button {
+                    store.loadToday()
+                } label: {
+                    Label("今天", systemImage: "calendar")
+                }
+                .buttonStyle(.bordered)
+                .disabled(store.dayText == store.newestDayText || store.isLoading)
+
+                Button {
+                    store.loadNextDay()
+                } label: {
+                    Label("后一天", systemImage: "chevron.right")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!store.canLoadNextDay || store.isLoading)
+            }
             Button {
                 store.reload()
             } label: {
@@ -2162,6 +2316,29 @@ private struct RequirementReviewView: View {
         store.candidates.filter(shouldShow)
     }
 
+    private func dayButton(_ day: String) -> some View {
+        let isSelected = store.dayText == day
+        return Button {
+            store.loadDay(day)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "calendar.circle.fill" : "calendar")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 20)
+                Text(day)
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isSelected ? Theme.primaryText : Theme.secondaryText)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(isSelected ? Theme.selected : SwiftUI.Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(store.isLoading)
+    }
+
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "checkmark.seal")
@@ -2191,6 +2368,13 @@ private struct RequirementReviewView: View {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
+            Button {
+                store.generateDaily()
+            } label: {
+                Label("生成该日日报", systemImage: "doc.text")
+            }
+            .buttonStyle(.bordered)
+            .disabled(store.isLoading)
             Button {
                 store.save()
             } label: {
@@ -2373,6 +2557,9 @@ private struct RequirementReviewView: View {
                 .frame(height: 40)
                 .frame(maxWidth: .infinity)
                 .background(fieldBackground)
+                .onChange(of: candidate.wrappedValue.title) { _, _ in
+                    store.markUnsaved()
+                }
             aiSuggestionText(candidate.wrappedValue.suggestedTitle)
         }
     }
@@ -2427,6 +2614,9 @@ private struct RequirementReviewView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 210, height: 38)
+                .onChange(of: candidate.wrappedValue.status) { _, _ in
+                    store.markUnsaved()
+                }
             }
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 7) {
@@ -2441,6 +2631,9 @@ private struct RequirementReviewView: View {
                         Text("文档").tag("docs")
                     }
                     .frame(width: 118, height: 38)
+                    .onChange(of: candidate.wrappedValue.requirementType) { _, _ in
+                        store.markUnsaved()
+                    }
                 }
             }
         }
